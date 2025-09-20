@@ -26,18 +26,18 @@ function instructions.load()
     instructions.jumpSprite:setFilter("nearest", "nearest")
     instructions.laserSprite = love.graphics.newImage("lasersintro.png")
     instructions.laserSprite:setFilter("nearest", "nearest")
-    instructions.duelSprite = love.graphics.newImage("duelintro.png")
-    instructions.duelSprite:setFilter("nearest", "nearest")
+    -- instructions.battleroyaleSprite = love.graphics.newImage("battleroyaleintro.png")
+    -- instructions.battleroyaleSprite:setFilter("nearest", "nearest")
     instructions.raceSprite = love.graphics.newImage("raceintro.png")
     instructions.raceSprite:setFilter("nearest", "nearest")
     -- Create animations for both instruction types
     local jumpGrid = instructions.anim8.newGrid(400, 300, 400, 600)
     local laserGrid = instructions.anim8.newGrid(400, 300, 400, 600)
-    local duelGrid = instructions.anim8.newGrid(400, 300, 400, 600)
+    -- local battleroyaleGrid = instructions.anim8.newGrid(400, 300, 400, 600)
     local raceGrid = instructions.anim8.newGrid(400, 300, 400, 600)
     instructions.jumpAnim = instructions.anim8.newAnimation(jumpGrid('1-1', '1-2'), 0.5)
     instructions.laserAnim = instructions.anim8.newAnimation(laserGrid('1-1', '1-2'), 0.5)
-    instructions.duelAnim = instructions.anim8.newAnimation(duelGrid('1-1', '1-2'), 0.5)
+    -- instructions.battleroyaleAnim = instructions.anim8.newAnimation(battleroyaleGrid('1-1', '1-2'), 0.5)
     instructions.raceAnim = instructions.anim8.newAnimation(raceGrid('1-1', '1-2'), 0.5)
 end
 
@@ -62,9 +62,14 @@ function instructions.show(gameType, callback)
     elseif gameType == "lasergame" then
         instructions.currentAnim = instructions.laserAnim
         instructions.currentSprite = instructions.laserSprite
-    elseif gameType == "duelgame" then
-        instructions.currentAnim = instructions.duelAnim
-        instructions.currentSprite = instructions.duelSprite
+    elseif gameType == "battleroyale" then
+        -- Skip instruction screen for battle royale
+        instructions.showing = false
+        instructions.isTransitioning = false
+        if callback then
+            callback()
+        end
+        return
     elseif gameType == "racegame" then
         instructions.currentAnim = instructions.raceAnim
         instructions.currentSprite = instructions.raceSprite

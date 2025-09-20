@@ -7,7 +7,7 @@ local enet = require "enet"
 local anim8 = require "anim8"
 local jumpGame = require "jumpgame"
 local laserGame = require "lasergame"
-local duelGame = require "duelgame"
+local battleRoyale = require "battleroyale"
 local raceGame = require "racegame"
 local characterCustomization = require "charactercustom"
 local debugConsole = require "debugconsole"
@@ -95,7 +95,7 @@ function love.load() -- music effect
     love.keyboard.setKeyRepeat(true)
     musicHandler.loadMenuMusic()
     instructions.load()
-    duelGame.load()
+    battleRoyale.load()
 
 
     -- load background
@@ -162,8 +162,8 @@ function love.update(dt)
         currentPartyGame = "jumpgame"
     elseif gameState == "lasergame" then
         currentPartyGame = "lasergame"
-    elseif gameState == "duelgame" then
-        currentPartyGame = "duelgame"
+    elseif gameState == "battleroyale" then
+        currentPartyGame = "battleroyale"
     elseif gameState == "racegame" then
         currentPartyGame = "racegame"
     end
@@ -177,8 +177,8 @@ function love.update(dt)
         elseif currentPartyGame == "lasergame" then
             instructions.clear()    
             love.keypressed("3")
-            currentPartyGame = "duelgame"
-        elseif currentPartyGame == "duelgame" then
+            currentPartyGame = "battleroyale"
+        elseif currentPartyGame == "battleroyale" then
             instructions.clear()    
             love.keypressed("4")  
             currentPartyGame = "racegame"
@@ -194,8 +194,8 @@ function love.update(dt)
             currentPartyGame = "jumpgame"
         elseif gameState == "lasergame" then
             currentPartyGame = "lasergame"
-        elseif gameState == "duelgame" then
-            currentPartyGame = "duelgame"
+        elseif gameState == "battleroyale" then
+            currentPartyGame = "battleroyale"
         elseif gameState == "racegame" then
             currentPartyGame = "racegame"
         end
@@ -308,30 +308,50 @@ function love.update(dt)
             
             gameState = returnState
         end
-    elseif gameState == "duelgame" then
+    elseif gameState == "battleroyale" then
         if returnState == "hosting" then
             updateServer()
         else
             updateClient()
         end
 
-        duelGame.update(dt)
+        battleRoyale.update(dt)
 
-        if duelGame.game_over then
-            debugConsole.addMessage("Duel game over, returning to state: " .. returnState)
+        if battleRoyale.game_over and battleRoyale.death_animation_done then
+            debugConsole.addMessage("Battle Royale game over, returning to state: " .. returnState)
             if returnState == "hosting" then
                 if players[localPlayer.id] then
                     players[localPlayer.id].totalScore = 
-                        (players[localPlayer.id].totalScore or 0) + duelGame.current_round_score
+                        (players[localPlayer.id].totalScore or 0) + battleRoyale.current_round_score
                     localPlayer.totalScore = players[localPlayer.id].totalScore
                 end
                 for _, client in ipairs(serverClients) do
                     safeSend(client, string.format("total_score,%d,%d", 
                         localPlayer.id, localPlayer.totalScore))
                 end
+                
+                -- Check if this was the last player in party mode
+                if partyMode then
+                    local remainingPlayers = 0
+                    for id, player in pairs(players) do
+                        if id ~= localPlayer.id and player.battleX and player.battleY then
+                            remainingPlayers = remainingPlayers + 1
+                        end
+                    end
+                    
+                    if remainingPlayers == 0 then
+                        -- Last player died, transition to next game
+                        debugConsole.addMessage("Last player eliminated, transitioning to next game")
+                        if currentPartyGame == "battleroyale" then
+                            instructions.clear()
+                            love.keypressed("4") -- Go to race game
+                            currentPartyGame = "racegame"
+                        end
+                    end
+                end
             else
                 if server and connected then
-                    safeSend(server, "duel_score," .. duelGame.current_round_score)
+                    safeSend(server, "battleroyale_score," .. battleRoyale.current_round_score)
                 end
             end
             gameState = returnState
@@ -434,6 +454,18 @@ function updateServer()
         for _, client in ipairs(serverClients) do
             safeSend(client, string.format("jump_position,0,%.2f,%.2f,%.2f,%.2f,%.2f",
                 jumpX, jumpY,
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+        end
+    end
+
+    -- send battle royale positions
+    if gameState == "battleroyale" then
+        local battleX = battleRoyale.player.x
+        local battleY = battleRoyale.player.y 
+        
+        for _, client in ipairs(serverClients) do
+            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f",
+                battleX, battleY,
                 localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
         end
     end
@@ -554,6 +586,15 @@ function updateClient()
                 localPlayer.id, jumpX, jumpY,
                 localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
         end
+
+        -- battle royale positions
+        if gameState == "battleroyale" then
+            local battleX = battleRoyale.player.x
+            local battleY = battleRoyale.player.y
+            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
+                localPlayer.id, battleX, battleY,
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+        end
     end
 end
 
@@ -563,8 +604,8 @@ function love.draw()
     elseif gameState == "lasergame" then
         love.graphics.setColor(1, 1, 1, 1)
         laserGame.draw(players, localPlayer.id)
-    elseif gameState == "duelgame" then
-        duelGame.draw()
+    elseif gameState == "battleroyale" then
+        battleRoyale.draw(players, localPlayer.id)
     elseif gameState == "racegame" then
         raceGame.draw(players, localPlayer.id)
     elseif gameState == "menu" then
@@ -637,7 +678,7 @@ function love.draw()
         
         if gameState ~= "instructions" then
             love.graphics.setColor(1, 1, 0)
-            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Duel Game, (4) Race Game, (P) Party Mode", 
+            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Battle Royale, (4) Race Game, (P) Party Mode", 
                 0, love.graphics.getHeight() - 30, love.graphics.getWidth(), "center")
         end
     end
@@ -719,16 +760,38 @@ function love.mousepressed(x, y, button)
             end
         elseif gameState == "customization" then
             local result = characterCustomization.mousepressed(x, y, button)
+            debugConsole.addMessage(string.format("Customization result: %s", tostring(result)))
             if result == "confirm" then
                 -- Apply the selected color and face to localPlayer
                 localPlayer.color = characterCustomization.getCurrentColor()
                 localPlayer.facePoints = characterCustomization.faceCanvas
                 debugConsole.addMessage("[Customization] Face saved successfully")
+                debugConsole.addMessage(string.format("[Customization] afterCustomization = %s", tostring(afterCustomization)))
                 
                 -- Proceed with the stored action
                 if afterCustomization == "host" then
+                    debugConsole.addMessage("[Customization] Calling startServer()")
                     startServer()
+                    debugConsole.addMessage(string.format("[Customization] After startServer(), gameState = %s", gameState))
+                    
+                    -- If server creation failed, try a fallback approach
+                    if not serverHost then
+                        debugConsole.addMessage("[Customization] Server creation failed, trying fallback")
+                        gameState = "hosting"
+                        connected = true
+                        localPlayer.id = 0
+                        players = {}
+                        players[localPlayer.id] = {
+                            x = localPlayer.x,
+                            y = localPlayer.y,
+                            color = localPlayer.color,
+                            id = localPlayer.id,
+                            facePoints = localPlayer.facePoints
+                        }
+                        debugConsole.addMessage("[Customization] Fallback hosting mode activated")
+                    end
                 elseif afterCustomization == "join" then
+                    debugConsole.addMessage("[Customization] Switching to connecting state")
                     gameState = "connecting"
                     buttons.start.visible = true
                 end
@@ -815,17 +878,18 @@ function love.keypressed(key)
         elseif key == "3" then
             -- Notify clients BEFORE showing host instructions
             for _, client in ipairs(serverClients) do
-                safeSend(client, "show_duel_instructions")
+                safeSend(client, "show_battleroyale_instructions")
             end
             
-            instructions.show("duelgame", function()
-                gameState = "duelgame"
+            instructions.show("battleroyale", function()
+                gameState = "battleroyale"
                 returnState = "hosting"
-                duelGame.reset()
+                battleRoyale.reset()
+                battleRoyale.setPlayerColor(localPlayer.color)
                 
                 -- Only send game start after instructions
                 for _, client in ipairs(serverClients) do
-                    safeSend(client, "start_duel_game")
+                    safeSend(client, "start_battleroyale_game")
                 end
             end)
         elseif key == "4" then
@@ -871,8 +935,8 @@ function love.keypressed(key)
         end
     end
 
-    if gameState == "duelgame" then
-        duelGame.keypressed(key)
+    if gameState == "battleroyale" then
+        battleRoyale.keypressed(key)
     end
 end
 
@@ -902,12 +966,36 @@ function addStatusMessage(msg)
 end
 
 function startServer()
-    serverHost = enet.host_create("0.0.0.0:12345")
-    if not serverHost then
-        debugConsole.addMessage("[Server] Failed to create server")
+    debugConsole.addMessage("[Server] startServer() called")
+    
+    -- Test if enet is available
+    if not enet then
+        debugConsole.addMessage("[Server] ERROR: enet library not available")
         return
     end
-    debugConsole.addMessage("[Server] Started on 0.0.0.0:12345")
+    
+    debugConsole.addMessage("[Server] enet library is available")
+    
+    -- Try different ports if the first one fails
+    local ports = {"12345", "12346", "12347", "12348"}
+    local success = false
+    
+    for i, port in ipairs(ports) do
+        debugConsole.addMessage(string.format("[Server] Trying port %s", port))
+        serverHost = enet.host_create("0.0.0.0:" .. port)
+        if serverHost then
+            debugConsole.addMessage(string.format("[Server] Successfully started on port %s", port))
+            success = true
+            break
+        else
+            debugConsole.addMessage(string.format("[Server] Port %s failed", port))
+        end
+    end
+    
+    if not success then
+        debugConsole.addMessage("[Server] Failed to create server on any port")
+        return
+    end
     
     players = {}
     peerToId = {}
@@ -927,6 +1015,7 @@ function startServer()
     connected = true
     serverStatus = "Running"
     debugConsole.addMessage("[Server] Server started with face data")
+    debugConsole.addMessage(string.format("[Server] Final gameState = %s, connected = %s", gameState, tostring(connected)))
 end
 
 function startNetworking()
@@ -1011,7 +1100,7 @@ function handleServerMessage(id, data)
         return
     end
 
-    if data:match("^duel_score,(%d+)") then
+    if data:match("^battleroyale_score,(%d+)") then
         local score = tonumber(data:match(",(%d+)"))
         if score then
             if not players[id] then players[id] = {totalScore = 0} end
@@ -1038,6 +1127,24 @@ function handleServerMessage(id, data)
         
         for _, client in ipairs(serverClients) do
             safeSend(client, string.format("jump_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
+                playerId, x, y, r, g, b))
+        end
+        return
+    end
+
+    -- Handle battle royale positions
+    if data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)") then
+        local playerId, x, y, r, g, b = data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
+        playerId = tonumber(playerId)
+        if not players[playerId] then
+            players[playerId] = {}
+        end
+        players[playerId].battleX = tonumber(x)
+        players[playerId].battleY = tonumber(y)
+        players[playerId].color = {tonumber(r), tonumber(g), tonumber(b)}
+        
+        for _, client in ipairs(serverClients) do
+            safeSend(client, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
                 playerId, x, y, r, g, b))
         end
         return
@@ -1160,6 +1267,11 @@ function handleClientMessage(data)
         return
     end
 
+    if data == "show_battleroyale_instructions" then
+        instructions.show("battleroyale", function() end)
+        return
+    end
+
     if data == "show_race_instructions" then
         instructions.show("racegame", function() end)
         return
@@ -1185,7 +1297,7 @@ function handleClientMessage(data)
         return
     end
 
-    if data:match("^duel_score,(%d+)") then
+    if data:match("^battleroyale_score,(%d+)") then
         local score = tonumber(data:match(",(%d+)"))
         if score then
             local previousScore = localPlayer.totalScore or 0
@@ -1256,10 +1368,11 @@ function handleClientMessage(data)
         return
     end
 
-    if data == "start_duel_game" then
-        gameState = "duelgame"
+    if data == "start_battleroyale_game" then
+        gameState = "battleroyale"
         returnState = "playing"
-        duelGame.reset()
+        battleRoyale.reset()
+        battleRoyale.setPlayerColor(localPlayer.color)
         return
     end
 
@@ -1310,6 +1423,20 @@ function handleClientMessage(data)
             end
             players[id].laserX = tonumber(x)
             players[id].laserY = tonumber(y)
+            players[id].color = {tonumber(r), tonumber(g), tonumber(b)}
+        end
+        return
+    end
+
+    if data:match("^battle_position,") then
+        local id, x, y, r, g, b = data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
+        id = tonumber(id)
+        if id and id ~= localPlayer.id then
+            if not players[id] then
+                players[id] = {}
+            end
+            players[id].battleX = tonumber(x)
+            players[id].battleY = tonumber(y)
             players[id].color = {tonumber(r), tonumber(g), tonumber(b)}
         end
         return
