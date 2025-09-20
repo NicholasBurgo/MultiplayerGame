@@ -11,6 +11,15 @@ battleRoyale.screen_height = 600
 battleRoyale.camera_x = 0
 battleRoyale.camera_y = 0
 
+-- Seed-based synchronization (like laser game)
+battleRoyale.seed = 0
+battleRoyale.random = love.math.newRandomGenerator()
+battleRoyale.gameTime = 0
+battleRoyale.nextMeteoroidTime = 0
+battleRoyale.nextPowerUpTime = 0
+battleRoyale.meteoroidSpawnPoints = {}
+battleRoyale.powerUpSpawnPoints = {}
+
 -- Game settings 
 battleRoyale.gravity = 1000
 battleRoyale.game_started = false
@@ -102,6 +111,7 @@ function battleRoyale.load()
     battleRoyale.player.has_double_jumped = false
     battleRoyale.player.on_ground = false
     battleRoyale.timer = (musicHandler.beatInterval * 20) -- 40 seconds
+    battleRoyale.gameTime = 0
     debugConsole.addMessage("[BattleRoyale] Battle royale loaded successfully")
 
     battleRoyale.keysPressed = {}
@@ -163,13 +173,66 @@ function battleRoyale.load()
     battleRoyale.asteroids = {}
     battleRoyale.asteroid_spawn_timer = 0
     battleRoyale.powerup_spawn_timer = 0
-    
-    -- Spawn initial asteroids for immediate action
-    for i = 1, 2 do
-        battleRoyale.spawnAsteroid()
-    end
 
     debugConsole.addMessage("[BattleRoyale] Game loaded")
+end
+
+function battleRoyale.setSeed(seed)
+    battleRoyale.seed = seed
+    battleRoyale.random:setSeed(seed)
+    battleRoyale.gameTime = 0
+    battleRoyale.nextMeteoroidTime = 0
+    battleRoyale.nextPowerUpTime = 0
+    battleRoyale.meteoroidSpawnPoints = {}
+    battleRoyale.powerUpSpawnPoints = {}
+    
+    -- Pre-calculate meteoroid spawn points (like laser game)
+    local time = 0
+    while time < battleRoyale.timer do
+        local spawnInfo = {
+            time = time,
+            side = battleRoyale.random:random(1, 4), -- 1=top, 2=right, 3=bottom, 4=left
+            speed = battleRoyale.random:random(400, 800),
+            size = battleRoyale.random:random(25, 45)
+        }
+        table.insert(battleRoyale.meteoroidSpawnPoints, spawnInfo)
+        
+        -- Spawn meteoroids every 1-3 seconds
+        time = time + battleRoyale.random:random(1.0, 3.0)
+    end
+    
+    -- Pre-calculate power-up spawn points
+    time = 0
+    while time < battleRoyale.timer do
+        local spawnInfo = {
+            time = time,
+            side = battleRoyale.random:random(1, 4),
+            speed = battleRoyale.random:random(150, 250),
+            type = battleRoyale.getRandomPowerUpType(time)
+        }
+        table.insert(battleRoyale.powerUpSpawnPoints, spawnInfo)
+        
+        -- Spawn power-ups every 2-4 seconds
+        time = time + battleRoyale.random:random(2.0, 4.0)
+    end
+    
+    debugConsole.addMessage(string.format(
+        "[BattleRoyale] Generated %d meteoroid and %d power-up spawn points with seed %d",
+        #battleRoyale.meteoroidSpawnPoints,
+        #battleRoyale.powerUpSpawnPoints,
+        seed
+    ))
+end
+
+function battleRoyale.getRandomPowerUpType(timeRemaining)
+    local powerUpTypes = {'speed', 'shield', 'laser', 'teleport'}
+    
+    -- Remove teleport from available types during final 13 seconds
+    if timeRemaining <= 13 then
+        powerUpTypes = {'speed', 'shield', 'laser'} -- No teleport in final 13 seconds
+    end
+    
+    return powerUpTypes[battleRoyale.random:random(1, #powerUpTypes)]
 end
 
 function battleRoyale.update(dt)
@@ -185,6 +248,8 @@ function battleRoyale.update(dt)
     if battleRoyale.game_over then return end
 
     battleRoyale.timer = battleRoyale.timer - dt
+    battleRoyale.gameTime = battleRoyale.gameTime + dt
+    
     if battleRoyale.timer <= 0 then
         battleRoyale.timer = 0
         battleRoyale.game_over = true
@@ -226,55 +291,51 @@ function battleRoyale.update(dt)
         return
     end
 
-    -- Update safe zone movement - ONLY on host
-    if _G.returnState == "hosting" then
-        battleRoyale.safe_zone_move_timer = battleRoyale.safe_zone_move_timer + dt
-        -- Change direction more frequently and randomly (1-3 seconds)
-        local change_interval = math.random(1, 3)
-        if battleRoyale.safe_zone_move_timer >= change_interval then
-            battleRoyale.safe_zone_move_timer = 0
-            -- Generate new target position within screen bounds
-            local margin = math.max(50, battleRoyale.safe_zone_radius + 50)
-            battleRoyale.safe_zone_target_x = math.random(margin, battleRoyale.screen_width - margin)
-            battleRoyale.safe_zone_target_y = math.random(margin, battleRoyale.screen_height - margin)
-            debugConsole.addMessage("[SafeZone] New target: " .. battleRoyale.safe_zone_target_x .. "," .. battleRoyale.safe_zone_target_y)
-        end
-        
-        -- Move safe zone towards target
-        local dx = battleRoyale.safe_zone_target_x - battleRoyale.center_x
-        local dy = battleRoyale.safe_zone_target_y - battleRoyale.center_y
-        local distance = math.sqrt(dx*dx + dy*dy)
-        if distance > 5 then
-            local move_x = (dx / distance) * battleRoyale.safe_zone_move_speed * dt
-            local move_y = (dy / distance) * battleRoyale.safe_zone_move_speed * dt
-            battleRoyale.center_x = battleRoyale.center_x + move_x
-            battleRoyale.center_y = battleRoyale.center_y + move_y
-        end
+    -- Update safe zone movement using deterministic system (like laser game)
+    battleRoyale.safe_zone_move_timer = battleRoyale.safe_zone_move_timer + dt
+    -- Change direction more frequently and randomly (1-3 seconds) using deterministic random
+    local change_interval = 2 -- Fixed interval for consistency
+    if battleRoyale.safe_zone_move_timer >= change_interval then
+        battleRoyale.safe_zone_move_timer = 0
+        -- Generate new target position within screen bounds using deterministic random
+        local margin = math.max(50, battleRoyale.safe_zone_radius + 50)
+        battleRoyale.safe_zone_target_x = battleRoyale.random:random(margin, battleRoyale.screen_width - margin)
+        battleRoyale.safe_zone_target_y = battleRoyale.random:random(margin, battleRoyale.screen_height - margin)
+        debugConsole.addMessage("[SafeZone] New target: " .. battleRoyale.safe_zone_target_x .. "," .. battleRoyale.safe_zone_target_y)
+    end
+    
+    -- Move safe zone towards target
+    local dx = battleRoyale.safe_zone_target_x - battleRoyale.center_x
+    local dy = battleRoyale.safe_zone_target_y - battleRoyale.center_y
+    local distance = math.sqrt(dx*dx + dy*dy)
+    if distance > 5 then
+        local move_x = (dx / distance) * battleRoyale.safe_zone_move_speed * dt
+        local move_y = (dy / distance) * battleRoyale.safe_zone_move_speed * dt
+        battleRoyale.center_x = battleRoyale.center_x + move_x
+        battleRoyale.center_y = battleRoyale.center_y + move_y
     end
 
-    -- Update shrinking safe zone - continuous shrinking immediately when game starts - ONLY on host
-    if _G.returnState == "hosting" then
-        if true then -- Shrinking always happens now
-            -- Start shrinking immediately when game starts
-            if battleRoyale.shrink_start_time == 0 and battleRoyale.game_started then
-                battleRoyale.shrink_start_time = love.timer.getTime()
-                debugConsole.addMessage("[BattleRoyale] Safe zone shrinking started!")
-            end
+    -- Update shrinking safe zone - continuous shrinking immediately when game starts (deterministic)
+    if true then -- Shrinking always happens now
+        -- Start shrinking immediately when game starts
+        if battleRoyale.shrink_start_time == 0 and battleRoyale.game_started then
+            battleRoyale.shrink_start_time = battleRoyale.gameTime
+            debugConsole.addMessage("[BattleRoyale] Safe zone shrinking started!")
+        end
+        
+        -- Start shrinking immediately after game starts
+        if battleRoyale.shrink_start_time > 0 then
+            local elapsed_shrink_time = battleRoyale.gameTime - battleRoyale.shrink_start_time
             
-            -- Start shrinking immediately after game starts
-            if battleRoyale.shrink_start_time > 0 then
-                local elapsed_shrink_time = love.timer.getTime() - battleRoyale.shrink_start_time
-                
-                -- Only shrink if we haven't exceeded the shrink duration
-                if elapsed_shrink_time <= battleRoyale.shrink_duration then
-                    -- Calculate shrink rate: 450 pixels over 30 seconds = 15 pixels per second
-                    local shrink_rate = 450 / battleRoyale.shrink_duration
-                    battleRoyale.safe_zone_radius = battleRoyale.safe_zone_radius - (dt * shrink_rate)
-                end
+            -- Only shrink if we haven't exceeded the shrink duration
+            if elapsed_shrink_time <= battleRoyale.shrink_duration then
+                -- Calculate shrink rate: 450 pixels over 30 seconds = 15 pixels per second
+                local shrink_rate = 450 / battleRoyale.shrink_duration
+                battleRoyale.safe_zone_radius = battleRoyale.safe_zone_radius - (dt * shrink_rate)
             end
         end
-        battleRoyale.safe_zone_radius = math.max(0, battleRoyale.safe_zone_radius) -- Minimum radius of 0 (completely closed)
     end
+    battleRoyale.safe_zone_radius = math.max(0, battleRoyale.safe_zone_radius) -- Minimum radius of 0 (completely closed)
 
     -- Handle top-down movement (only if not eliminated)
     if not battleRoyale.player_dropped then
@@ -304,25 +365,8 @@ function battleRoyale.update(dt)
 
     -- Check if player is outside safe zone (only after game has started)
     if battleRoyale.game_started then
-        -- Use synchronized safe zone data for collision detection
+        -- Use deterministic safe zone data (same on all clients)
         local center_x, center_y, radius = battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius
-        
-        -- For clients, use synchronized data from host
-        if _G.returnState == "playing" and _G.players then
-            for id, player in pairs(_G.players) do
-                if player.battleSafeZone then
-                    local x, y, r = player.battleSafeZone:match("([-%d.]+),([-%d.]+),([-%d.]+)")
-                    if x and y and r then
-                        center_x, center_y, radius = tonumber(x), tonumber(y), tonumber(r)
-                        -- Update local safe zone variables to match synchronized data
-                        battleRoyale.center_x = center_x
-                        battleRoyale.center_y = center_y
-                        battleRoyale.safe_zone_radius = radius
-                        break
-                    end
-                end
-            end
-        end
         
         local distance_from_center = math.sqrt(
             (battleRoyale.player.x + battleRoyale.player.width/2 - center_x)^2 +
@@ -346,53 +390,41 @@ function battleRoyale.update(dt)
         end
     end
 
-    -- Handle powerup collisions (circular collision) - only on host or single player
-    if not _G.returnState or _G.returnState == "hosting" then
-        for i = #battleRoyale.powerUps, 1, -1 do
-            local powerUp = battleRoyale.powerUps[i]
-            local powerUp_center_x = powerUp.x + powerUp.width/2
-            local powerUp_center_y = powerUp.y + powerUp.height/2
-            local powerUp_radius = powerUp.width/2
-            
-            local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
-            local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
-            local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
-            
-            -- Calculate distance between centers
-            local dx = powerUp_center_x - player_center_x
-            local dy = powerUp_center_y - player_center_y
-            local distance = math.sqrt(dx*dx + dy*dy)
-            
-            -- Check if circles overlap
-            if distance < (powerUp_radius + player_radius) then
-                if battleRoyale.collectPowerUp(powerUp) then
-                    table.remove(battleRoyale.powerUps, i)
-                end
-            end
-        end
-    else
-        -- For clients, check collisions with synchronized powerups
-        for i = #battleRoyale.powerUps, 1, -1 do
-            local powerUp = battleRoyale.powerUps[i]
-            local powerUp_center_x = powerUp.x + powerUp.width/2
-            local powerUp_center_y = powerUp.y + powerUp.height/2
-            local powerUp_radius = powerUp.width/2
-            
-            local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
-            local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
-            local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
-            
-            -- Calculate distance between centers
-            local dx = powerUp_center_x - player_center_x
-            local dy = powerUp_center_y - player_center_y
-            local distance = math.sqrt(dx*dx + dy*dy)
-            
-            -- Check if circles overlap
-            if distance < (powerUp_radius + player_radius) then
-                -- Send powerup collection to host
-                if _G.server then
-                    _G.safeSend(_G.server, string.format("powerup_collected,%d,%.2f,%.2f,%s", 
-                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type))
+    -- Handle powerup collisions (circular collision) - only on local player
+    for i = #battleRoyale.powerUps, 1, -1 do
+        local powerUp = battleRoyale.powerUps[i]
+        local powerUp_center_x = powerUp.x + powerUp.width/2
+        local powerUp_center_y = powerUp.y + powerUp.height/2
+        local powerUp_radius = powerUp.width/2
+        
+        local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
+        local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
+        local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
+        
+        -- Calculate distance between centers
+        local dx = powerUp_center_x - player_center_x
+        local dy = powerUp_center_y - player_center_y
+        local distance = math.sqrt(dx*dx + dy*dy)
+        
+        -- Check if circles overlap
+        if distance < (powerUp_radius + player_radius) then
+            if battleRoyale.collectPowerUp(powerUp) then
+                table.remove(battleRoyale.powerUps, i)
+                
+                -- Send power-up collection to other players
+                if _G.localPlayer and _G.localPlayer.id then
+                    local message = string.format("battle_powerup_collected,%d,%.2f,%.2f,%s", 
+                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type)
+                    
+                    if _G.returnState == "hosting" and _G.serverClients then
+                        for _, client in ipairs(_G.serverClients) do
+                            _G.safeSend(client, message)
+                        end
+                    elseif _G.returnState == "playing" and _G.server then
+                        _G.safeSend(_G.server, message)
+                    end
+                    
+                    debugConsole.addMessage("[BattleRoyale] Player collected " .. powerUp.type .. " power-up")
                 end
             end
         end
@@ -442,10 +474,8 @@ function battleRoyale.update(dt)
         end
     end
 
-    -- Update asteroids - ONLY on host
-    if _G.returnState == "hosting" then
-        battleRoyale.updateAsteroids(dt)
-    end
+    -- Update asteroids using deterministic spawning (like laser game)
+    battleRoyale.updateAsteroids(dt)
     
     -- Check asteroid collisions with player
     battleRoyale.checkAsteroidCollisions()
@@ -453,10 +483,8 @@ function battleRoyale.update(dt)
     -- Check laser collisions with player
     battleRoyale.checkLaserCollisions()
     
-    -- Update power-ups (spawn new ones and remove old ones) - ONLY on host
-    if _G.returnState == "hosting" then
-        battleRoyale.updatePowerUps(dt)
-    end
+    -- Update power-ups using deterministic spawning (like laser game)
+    battleRoyale.updatePowerUps(dt)
     
     -- Update starfield
     battleRoyale.updateStars(dt)
@@ -630,26 +658,8 @@ end
 
 
 function battleRoyale.drawSafeZone(playersTable)
-    -- Use synchronized safe zone data if available (prioritize host data)
+    -- Use deterministic safe zone data (same on all clients)
     local center_x, center_y, radius = battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius
-    
-    -- For clients, always use synchronized data from host
-    if _G.returnState == "playing" and playersTable then
-        for id, player in pairs(playersTable) do
-            if player.battleSafeZone then
-                local x, y, r = player.battleSafeZone:match("([-%d.]+),([-%d.]+),([-%d.]+)")
-                if x and y and r then
-                    center_x, center_y, radius = tonumber(x), tonumber(y), tonumber(r)
-                    -- Update local safe zone variables to match synchronized data
-                    battleRoyale.center_x = center_x
-                    battleRoyale.center_y = center_y
-                    battleRoyale.safe_zone_radius = radius
-                    debugConsole.addMessage("[SafeZone] Using synced data: " .. center_x .. "," .. center_y .. "," .. radius)
-                    break
-                end
-            end
-        end
-    end
     
     -- Only draw if radius is greater than 0
     if radius > 0 then
@@ -1071,6 +1081,22 @@ function battleRoyale.shootLaser()
         -- Play laser sound
         sounds.laser:stop()
         sounds.laser:play()
+        
+        -- Send laser data to other players (like laser game does)
+        if _G.localPlayer and _G.localPlayer.id then
+            local laserData = string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                laser.x, laser.y, laser.vx, laser.vy, laser.time, laser.duration, laser.size)
+            
+            if _G.returnState == "hosting" and _G.serverClients then
+                for _, client in ipairs(_G.serverClients) do
+                    _G.safeSend(client, string.format("battle_laser_shot,%d,%s", 
+                        _G.localPlayer.id, laserData))
+                end
+            elseif _G.returnState == "playing" and _G.server then
+                _G.safeSend(_G.server, string.format("battle_laser_shot,%d,%s", 
+                    _G.localPlayer.id, laserData))
+            end
+        end
     end
 end
 
@@ -1090,6 +1116,19 @@ function battleRoyale.teleportPlayer()
         -- Play sound effect
         sounds.powerup:stop()
         sounds.powerup:play()
+        
+        -- Send teleport notification to other players
+        if _G.localPlayer and _G.localPlayer.id then
+            if _G.returnState == "hosting" and _G.serverClients then
+                for _, client in ipairs(_G.serverClients) do
+                    _G.safeSend(client, string.format("battle_teleport,%d,%.2f,%.2f", 
+                        _G.localPlayer.id, battleRoyale.player.x, battleRoyale.player.y))
+                end
+            elseif _G.returnState == "playing" and _G.server then
+                _G.safeSend(_G.server, string.format("battle_teleport,%d,%.2f,%.2f", 
+                    _G.localPlayer.id, battleRoyale.player.x, battleRoyale.player.y))
+            end
+        end
     end
 end
 
@@ -1120,16 +1159,9 @@ function battleRoyale.activateSpecificPowerUp(type)
 end
 
 function battleRoyale.updatePowerUps(dt)
-    -- Spawn new power-ups throughout the game
-    battleRoyale.powerup_spawn_timer = battleRoyale.powerup_spawn_timer + dt
-    if battleRoyale.powerup_spawn_timer >= battleRoyale.powerup_spawn_interval then
-        -- Spawn 2-3 power-ups at once
-        local num_powerups = math.random(2, 3)
-        debugConsole.addMessage("[BattleRoyale] Spawning " .. num_powerups .. " powerups")
-        for i = 1, num_powerups do
-            battleRoyale.spawnPowerUp()
-        end
-        battleRoyale.powerup_spawn_timer = 0
+    -- Check if we need to spawn any power-ups based on pre-calculated spawn points
+    while #battleRoyale.powerUpSpawnPoints > 0 and battleRoyale.powerUpSpawnPoints[1].time <= battleRoyale.gameTime do
+        battleRoyale.spawnPowerUpFromSpawnPoint(table.remove(battleRoyale.powerUpSpawnPoints, 1))
     end
     
     -- Update existing power-ups and remove those outside circle for too long
@@ -1150,6 +1182,56 @@ function battleRoyale.updatePowerUps(dt)
         
         -- Power-ups no longer have safe zone timer - they persist until off-screen
     end
+end
+
+function battleRoyale.spawnPowerUpFromSpawnPoint(spawnInfo)
+    local side = spawnInfo.side
+    local speed = spawnInfo.speed
+    local pType = spawnInfo.type
+    
+    -- Spawn from screen edges like meteoroids
+    local powerUp = {
+        width = 35,
+        height = 35,
+        type = pType,
+        outside_circle_time = 0,
+        speed = speed,
+        is_moving = true
+    }
+    
+    -- Calculate angle towards safe zone center
+    local angle_to_center = 0
+    local spawn_x, spawn_y = 0, 0
+    
+    if side == 1 then -- Top
+        spawn_x = battleRoyale.random:random(0, battleRoyale.screen_width)
+        spawn_y = -50
+        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
+    elseif side == 2 then -- Right
+        spawn_x = battleRoyale.screen_width + 50
+        spawn_y = battleRoyale.random:random(0, battleRoyale.screen_height)
+        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
+    elseif side == 3 then -- Bottom
+        spawn_x = battleRoyale.random:random(0, battleRoyale.screen_width)
+        spawn_y = battleRoyale.screen_height + 50
+        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
+    else -- Left
+        spawn_x = -50
+        spawn_y = battleRoyale.random:random(0, battleRoyale.screen_height)
+        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
+    end
+    
+    -- Add some randomness to the angle (within 45 degrees of center direction)
+    local angle_variance = battleRoyale.random:random(-math.pi/4, math.pi/4) -- ±45 degrees
+    local final_angle = angle_to_center + angle_variance
+    
+    -- Set position and velocity
+    powerUp.x = spawn_x
+    powerUp.y = spawn_y
+    powerUp.vx = math.cos(final_angle) * powerUp.speed
+    powerUp.vy = math.sin(final_angle) * powerUp.speed
+    
+    table.insert(battleRoyale.powerUps, powerUp)
 end
 
 function battleRoyale.spawnPowerUp()
@@ -1212,31 +1294,9 @@ function battleRoyale.spawnPowerUp()
 end
 
 function battleRoyale.updateAsteroids(dt)
-    -- Spawn new asteroids on rhythm (every beat) or use timer if no music
-    battleRoyale.asteroid_spawn_timer = battleRoyale.asteroid_spawn_timer + dt
-    
-    -- Check if we're on a beat (when music is playing) or use timer fallback
-    local currentBeat = math.floor(musicHandler.effectBeat)
-    local previousBeat = math.floor((musicHandler.effectTimer - dt) / musicHandler.beatInterval)
-    
-    if (musicHandler.music and musicHandler.isPlaying and currentBeat > previousBeat) or 
-       battleRoyale.asteroid_spawn_timer >= battleRoyale.asteroid_spawn_interval then
-        
-        -- Spawn more asteroids at the beginning and middle phases
-        local game_time_elapsed = battleRoyale.shrink_start_time > 0 and (love.timer.getTime() - battleRoyale.shrink_start_time) or 0
-        
-        -- More asteroids at the beginning (0-10 seconds)
-        if game_time_elapsed <= 10 then
-            debugConsole.addMessage("[BattleRoyale] Spawning 2 asteroids")
-            battleRoyale.spawnAsteroid()
-            battleRoyale.spawnAsteroid() -- Spawn 2 asteroids
-        -- Fewer asteroids later (10+ seconds)
-        else
-            debugConsole.addMessage("[BattleRoyale] Spawning 1 asteroid")
-            battleRoyale.spawnAsteroid() -- Spawn 1 asteroid
-        end
-        
-        battleRoyale.asteroid_spawn_timer = 0
+    -- Check if we need to spawn any asteroids based on pre-calculated spawn points
+    while #battleRoyale.meteoroidSpawnPoints > 0 and battleRoyale.meteoroidSpawnPoints[1].time <= battleRoyale.gameTime do
+        battleRoyale.spawnAsteroidFromSpawnPoint(table.remove(battleRoyale.meteoroidSpawnPoints, 1))
     end
     
     -- Update existing asteroids
@@ -1258,6 +1318,42 @@ function battleRoyale.updateAsteroids(dt)
             table.remove(battleRoyale.asteroids, i)
         end
     end
+end
+
+function battleRoyale.spawnAsteroidFromSpawnPoint(spawnInfo)
+    local asteroid = {}
+    local side = spawnInfo.side
+    local speed = spawnInfo.speed
+    local size = spawnInfo.size
+    
+    if side == 1 then -- Top
+        asteroid.x = battleRoyale.random:random(0, battleRoyale.screen_width)
+        asteroid.y = -50
+        asteroid.vx = battleRoyale.random:random(-speed/4, speed/4)
+        asteroid.vy = battleRoyale.random:random(speed/4, speed)
+    elseif side == 2 then -- Right
+        asteroid.x = battleRoyale.screen_width + 50
+        asteroid.y = battleRoyale.random:random(0, battleRoyale.screen_height)
+        asteroid.vx = battleRoyale.random:random(-speed, -speed/4)
+        asteroid.vy = battleRoyale.random:random(-speed/4, speed/4)
+    elseif side == 3 then -- Bottom
+        asteroid.x = battleRoyale.random:random(0, battleRoyale.screen_width)
+        asteroid.y = battleRoyale.screen_height + 50
+        asteroid.vx = battleRoyale.random:random(-speed/4, speed/4)
+        asteroid.vy = battleRoyale.random:random(-speed, -speed/4)
+    else -- Left
+        asteroid.x = -50
+        asteroid.y = battleRoyale.random:random(0, battleRoyale.screen_height)
+        asteroid.vx = battleRoyale.random:random(speed/4, speed)
+        asteroid.vy = battleRoyale.random:random(-speed/4, speed/4)
+    end
+    
+    asteroid.size = size
+    asteroid.color = {0.5, 0.5, 0.5} -- Consistent gray color
+    asteroid.points = {} -- Store irregular shape points
+    battleRoyale.generateAsteroidShape(asteroid) -- Generate the irregular shape
+    
+    table.insert(battleRoyale.asteroids, asteroid)
 end
 
 function battleRoyale.spawnAsteroid()
@@ -1295,21 +1391,21 @@ function battleRoyale.spawnAsteroid()
 end
 
 function battleRoyale.generateAsteroidShape(asteroid)
-    -- Generate irregular asteroid shape with 6-8 points
-    local num_points = math.random(6, 8)
+    -- Generate irregular asteroid shape with 6-8 points using deterministic random
+    local num_points = battleRoyale.random:random(6, 8)
     asteroid.points = {}
     
     for i = 1, num_points do
         local angle = (i - 1) * (2 * math.pi / num_points)
-        local radius_variation = math.random(0.7, 1.1) -- Make it irregular but not too extreme
+        local radius_variation = battleRoyale.random:random(0.7, 1.1) -- Make it irregular but not too extreme
         local base_radius = asteroid.size / 2
         local x = math.cos(angle) * base_radius * radius_variation
         local y = math.sin(angle) * base_radius * radius_variation
         
-        -- Add some random jitter to make it more chaotic
+        -- Add some deterministic jitter to make it more chaotic
         local jitter = asteroid.size / 10
-        x = x + math.random(-jitter, jitter)
-        y = y + math.random(-jitter, jitter)
+        x = x + battleRoyale.random:random(-jitter, jitter)
+        y = y + battleRoyale.random:random(-jitter, jitter)
         
         table.insert(asteroid.points, x)
         table.insert(asteroid.points, y)

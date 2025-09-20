@@ -892,43 +892,18 @@ function updateServer()
             laserData = "|" .. table.concat(laserStrings, "|")
         end
         
+        -- Include elimination status for host
+        local eliminationStatus = battleRoyale.player_dropped and "1" or "0"
+        
         -- Send position and laser data like laser game
         for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
+            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s",
                 battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], laserData))
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], 
+                eliminationStatus, laserData or ""))
         end
         
-        -- Send game state data separately (like laser game does)
-        local powerUpData = ""
-        if battleRoyale.powerUps and #battleRoyale.powerUps > 0 then
-            local powerUpStrings = {}
-            for i, powerUp in ipairs(battleRoyale.powerUps) do
-                table.insert(powerUpStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%d",
-                    powerUp.x, powerUp.y, powerUp.vx or 0, powerUp.vy or 0, 
-                    powerUp.width, powerUp.height, powerUp.type, powerUp.is_moving and 1 or 0))
-            end
-            powerUpData = table.concat(powerUpStrings, "|")
-        end
-        
-        local meteoroidData = ""
-        if battleRoyale.asteroids and #battleRoyale.asteroids > 0 then
-            local meteoroidStrings = {}
-            for i, meteoroid in ipairs(battleRoyale.asteroids) do
-                table.insert(meteoroidStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f",
-                    meteoroid.x, meteoroid.y, meteoroid.vx, meteoroid.vy, meteoroid.size))
-            end
-            meteoroidData = table.concat(meteoroidStrings, "|")
-        end
-        
-        local safeZoneData = string.format("%.2f,%.2f,%.2f", 
-            battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
-        
-        -- Send game state data to all clients
-        for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_game_state,%s,%s,%s", 
-                powerUpData, meteoroidData, safeZoneData))
-        end
+        -- Game state is now deterministic - no need to sync meteoroids/powerups
     end
 
     -- Handle network events
@@ -1067,10 +1042,14 @@ function updateClient()
                 laserData = "|" .. table.concat(laserStrings, "|")
             end
             
+            -- Include elimination status
+            local eliminationStatus = battleRoyale.player_dropped and "1" or "0"
+            
             -- Send position and laser data like laser game
-            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
+            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s",
                 localPlayer.id, battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], laserData))
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], 
+                eliminationStatus, laserData or ""))
         end
     end
 end
@@ -1389,13 +1368,15 @@ function love.keypressed(key)
                 returnState = "hosting"
                 _G.returnState = "hosting"
                 initializeRoundWins()
+                local seed = os.time() + love.timer.getTime() * 10000
                 battleRoyale.reset()
+                battleRoyale.setSeed(seed)
                 battleRoyale.setPlayerColor(localPlayer.color)
                 
                 -- Only send game start after instructions
                 debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients")
                 for _, client in ipairs(serverClients) do
-                    safeSend(client, "start_battleroyale_game")
+                    safeSend(client, "start_battleroyale_game," .. seed)
                     debugConsole.addMessage("[Host] Sent battle royale start to client")
                 end
             end)
@@ -1795,36 +1776,53 @@ function handleServerMessage(id, data)
         return
     end
 
-    -- Handle powerup collection from clients
-    if data:match("^powerup_collected,") then
-        local playerId, x, y, type = data:match("^powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
+    -- Handle laser shots from clients
+    if data:match("^battle_laser_shot,") then
+        local playerId, laserData = data:match("^battle_laser_shot,(%d+),(.+)")
+        if playerId and laserData then
+            playerId = tonumber(playerId)
+            -- Forward laser shot to all other clients
+            for _, client in ipairs(serverClients) do
+                if client ~= event.peer then -- Don't send back to sender
+                    safeSend(client, data)
+                end
+            end
+            debugConsole.addMessage("[Server] Forwarded laser shot from player " .. playerId)
+        end
+        return
+    end
+
+    -- Handle teleports from clients
+    if data:match("^battle_teleport,") then
+        local playerId, x, y = data:match("^battle_teleport,(%d+),([-%d.]+),([-%d.]+)")
+        if playerId and x and y then
+            playerId = tonumber(playerId)
+            x, y = tonumber(x), tonumber(y)
+            -- Forward teleport to all other clients
+            for _, client in ipairs(serverClients) do
+                if client ~= event.peer then -- Don't send back to sender
+                    safeSend(client, data)
+                end
+            end
+            debugConsole.addMessage("[Server] Forwarded teleport from player " .. playerId)
+        end
+        return
+    end
+
+    -- Handle power-up collection from clients
+    if data:match("^battle_powerup_collected,") then
+        local playerId, x, y, type = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
         if playerId and x and y and type then
             playerId = tonumber(playerId)
             x, y = tonumber(x), tonumber(y)
             
-            -- Find and remove the powerup from host's game state
-            for i = #battleRoyale.powerUps, 1, -1 do
-                local powerUp = battleRoyale.powerUps[i]
-                if math.abs(powerUp.x - x) < 5 and math.abs(powerUp.y - y) < 5 and powerUp.type == type then
-                    table.remove(battleRoyale.powerUps, i)
-                    debugConsole.addMessage("[Server] Player " .. playerId .. " collected " .. type .. " powerup")
-                    break
+            -- Forward power-up collection to all other clients
+            for _, client in ipairs(serverClients) do
+                if client ~= event.peer then -- Don't send back to sender
+                    safeSend(client, data)
                 end
             end
-            
-            -- Give powerup to the player by simulating collection
-            if players[playerId] then
-                -- Create a temporary powerup object for collection
-                local tempPowerUp = {
-                    x = x,
-                    y = y,
-                    width = 35,
-                    height = 35,
-                    type = type
-                }
-                -- This will be handled by the next sync, but we can log it
-                debugConsole.addMessage("[Server] Powerup " .. type .. " given to player " .. playerId)
-            end
+            debugConsole.addMessage("[Server] Forwarded power-up collection from player " .. playerId)
         end
         return
     end
@@ -1860,8 +1858,20 @@ function handleClientMessage(data)
     if data:match("^game_state_sync,") then
         debugConsole.addMessage("[Client] DETECTED game_state_sync message!")
     end
-    if data == "start_battleroyale_game" then
-        debugConsole.addMessage("[Client] RECEIVED BATTLE ROYALE START MESSAGE!")
+    if data:match("^start_battleroyale_game,") then
+        local seed = tonumber(data:match("^start_battleroyale_game,(%d+)"))
+        debugConsole.addMessage("[Client] RECEIVED BATTLE ROYALE START MESSAGE with seed: " .. seed)
+        if seed then
+            gameState = "battleroyale"
+            returnState = "playing"
+            _G.returnState = "playing"
+            battleRoyale.load()
+            battleRoyale.setSeed(seed)
+            battleRoyale.setPlayerColor(localPlayer.color)
+            debugConsole.addMessage("[Client] Battle royale game state set to: " .. gameState)
+            debugConsole.addMessage("[Client] Battle royale loaded successfully with seed: " .. seed)
+        end
+        return
     end
     -- instructions
     if data == "show_jump_instructions" then
@@ -1980,17 +1990,6 @@ function handleClientMessage(data)
         return
     end
 
-    if data == "start_battleroyale_game" then
-        debugConsole.addMessage("[Client] Starting battle royale game")
-        gameState = "battleroyale"
-        returnState = "playing"
-        _G.returnState = "playing"
-        battleRoyale.load()
-        battleRoyale.setPlayerColor(localPlayer.color)
-        debugConsole.addMessage("[Client] Battle royale game state set to: " .. gameState)
-        debugConsole.addMessage("[Client] Battle royale loaded successfully")
-        return
-    end
 
     -- Handle synchronized game state from host
     if data:match("^game_state_sync,") then
@@ -2082,40 +2081,6 @@ function handleClientMessage(data)
     end
 
 
-    if data:match("^battle_game_state,") then
-        -- Handle game state data from host
-        local parts = {}
-        for part in data:gmatch("([^,]+)") do
-            table.insert(parts, part)
-        end
-        
-        if #parts >= 4 then
-            local powerUpData = parts[2]
-            local meteoroidData = parts[3]
-            local safeZoneData = parts[4]
-            
-            -- Update safe zone
-            local sx, sy, sr = safeZoneData:match("([-%d.]+),([-%d.]+),([-%d.]+)")
-            if sx and sy and sr then
-                battleRoyale.center_x = tonumber(sx)
-                battleRoyale.center_y = tonumber(sy)
-                battleRoyale.safe_zone_radius = tonumber(sr)
-            end
-            
-            -- Update powerups
-            battleRoyale.powerUps = {}
-            if powerUpData and powerUpData ~= "" then
-                battleRoyale.powerUps = deserializePowerUps(powerUpData)
-            end
-            
-            -- Update meteoroids
-            battleRoyale.asteroids = {}
-            if meteoroidData and meteoroidData ~= "" then
-                battleRoyale.asteroids = deserializeMeteoroids(meteoroidData)
-            end
-        end
-        return
-    end
 
     if data:match("^battle_position,") then
         -- Parse the message using comma delimiter like laser game
@@ -2246,6 +2211,62 @@ function handleClientMessage(data)
         partyMode = false
         currentPartyGame = nil
         gameState = "playing"
+        return
+    end
+
+    -- Handle laser shots from other players
+    if data:match("^battle_laser_shot,") then
+        local playerId, laserData = data:match("^battle_laser_shot,(%d+),(.+)")
+        if playerId and laserData and playerId ~= localPlayer.id then
+            playerId = tonumber(playerId)
+            local x, y, vx, vy, time, duration, size = laserData:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
+            if x and y and vx and vy and time and duration and size then
+                x, y, vx, vy, time, duration, size = tonumber(x), tonumber(y), tonumber(vx), tonumber(vy), tonumber(time), tonumber(duration), tonumber(size)
+                
+                -- Store laser data for this player
+                if players[playerId] then
+                    players[playerId].battleLasers = laserData
+                end
+                debugConsole.addMessage("[Client] Received laser shot from player " .. playerId)
+            end
+        end
+        return
+    end
+
+    -- Handle teleports from other players
+    if data:match("^battle_teleport,") then
+        local playerId, x, y = data:match("^battle_teleport,(%d+),([-%d.]+),([-%d.]+)")
+        if playerId and x and y and playerId ~= localPlayer.id then
+            playerId = tonumber(playerId)
+            x, y = tonumber(x), tonumber(y)
+            
+            -- Update player position
+            if players[playerId] then
+                players[playerId].battleX = x
+                players[playerId].battleY = y
+            end
+            debugConsole.addMessage("[Client] Received teleport from player " .. playerId)
+        end
+        return
+    end
+
+    -- Handle power-up collection from other players
+    if data:match("^battle_powerup_collected,") then
+        local playerId, x, y, type = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
+        if playerId and x and y and type and playerId ~= localPlayer.id then
+            playerId = tonumber(playerId)
+            x, y = tonumber(x), tonumber(y)
+            
+            -- Remove the power-up from local game state
+            for i = #battleRoyale.powerUps, 1, -1 do
+                local powerUp = battleRoyale.powerUps[i]
+                if math.abs(powerUp.x - x) < 5 and math.abs(powerUp.y - y) < 5 and powerUp.type == type then
+                    table.remove(battleRoyale.powerUps, i)
+                    debugConsole.addMessage("[Client] Removed power-up " .. type .. " collected by player " .. playerId)
+                    break
+                end
+            end
+        end
         return
     end
 
