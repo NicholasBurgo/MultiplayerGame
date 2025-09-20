@@ -1811,10 +1811,28 @@ function handleServerMessage(id, data)
 
     -- Handle power-up collection from clients
     if data:match("^battle_powerup_collected,") then
-        local playerId, x, y, type = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
-        if playerId and x and y and type then
+        local playerId, x, y, type, spawnTime, spawnSide = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+),([-%d.]+),(%d+)")
+        if playerId and x and y and type and spawnTime and spawnSide then
             playerId = tonumber(playerId)
             x, y = tonumber(x), tonumber(y)
+            spawnTime, spawnSide = tonumber(spawnTime), tonumber(spawnSide)
+            
+            -- Remove power-up from host's game state using spawn info for reliable matching
+            if battleRoyale and battleRoyale.powerUps then
+                local found = false
+                for i = #battleRoyale.powerUps, 1, -1 do
+                    local powerUp = battleRoyale.powerUps[i]
+                    if powerUp.type == type and powerUp.spawnTime == spawnTime and powerUp.spawnSide == spawnSide then
+                        table.remove(battleRoyale.powerUps, i)
+                        debugConsole.addMessage("[Server] Removed power-up " .. type .. " (spawnTime=" .. spawnTime .. ") from host game state")
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    debugConsole.addMessage("[Server] WARNING: Could not find power-up to remove from host!")
+                end
+            end
             
             -- Forward power-up collection to all other clients
             for _, client in ipairs(serverClients) do
@@ -2252,20 +2270,47 @@ function handleClientMessage(data)
 
     -- Handle power-up collection from other players
     if data:match("^battle_powerup_collected,") then
-        local playerId, x, y, type = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
-        if playerId and x and y and type and playerId ~= localPlayer.id then
+        local playerId, x, y, type, spawnTime, spawnSide = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+),([-%d.]+),(%d+)")
+        if playerId and x and y and type and spawnTime and spawnSide and playerId ~= localPlayer.id then
             playerId = tonumber(playerId)
             x, y = tonumber(x), tonumber(y)
+            spawnTime, spawnSide = tonumber(spawnTime), tonumber(spawnSide)
             
-            -- Remove the power-up from local game state
+            -- Remove the power-up from local game state using spawn info for reliable matching
+            local found = false
             for i = #battleRoyale.powerUps, 1, -1 do
                 local powerUp = battleRoyale.powerUps[i]
-                if math.abs(powerUp.x - x) < 5 and math.abs(powerUp.y - y) < 5 and powerUp.type == type then
+                if powerUp.type == type and powerUp.spawnTime == spawnTime and powerUp.spawnSide == spawnSide then
                     table.remove(battleRoyale.powerUps, i)
-                    debugConsole.addMessage("[Client] Removed power-up " .. type .. " collected by player " .. playerId)
+                    debugConsole.addMessage("[Client] Removed power-up " .. type .. " (spawnTime=" .. spawnTime .. ") collected by player " .. playerId)
+                    found = true
                     break
                 end
             end
+            
+            if not found then
+                debugConsole.addMessage("[Client] WARNING: Could not find power-up to remove!")
+            end
+        end
+        return
+    end
+
+    -- Handle battle royale game state synchronization
+    if data:match("^battle_sync,") then
+        local gameTime, centerX, centerY, radius = data:match("^battle_sync,([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+)")
+        if gameTime and centerX and centerY and radius then
+            gameTime = tonumber(gameTime)
+            centerX = tonumber(centerX)
+            centerY = tonumber(centerY)
+            radius = tonumber(radius)
+            
+            -- Sync game state with host
+            battleRoyale.gameTime = gameTime
+            battleRoyale.center_x = centerX
+            battleRoyale.center_y = centerY
+            battleRoyale.safe_zone_radius = radius
+            
+            debugConsole.addMessage("[Client] Synced game state: time=" .. gameTime .. ", center=(" .. centerX .. "," .. centerY .. "), radius=" .. radius)
         end
         return
     end

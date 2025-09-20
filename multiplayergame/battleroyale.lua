@@ -19,6 +19,7 @@ battleRoyale.nextMeteoroidTime = 0
 battleRoyale.nextPowerUpTime = 0
 battleRoyale.meteoroidSpawnPoints = {}
 battleRoyale.powerUpSpawnPoints = {}
+battleRoyale.safeZoneTargets = {}
 
 -- Game settings 
 battleRoyale.gravity = 1000
@@ -44,6 +45,8 @@ battleRoyale.safe_zone_move_speed = 60 -- pixels per second (faster movement)
 battleRoyale.safe_zone_move_timer = 0
 battleRoyale.safe_zone_target_x = 400
 battleRoyale.safe_zone_target_y = 300
+battleRoyale.sync_timer = 0
+battleRoyale.sync_interval = 1.0 -- Send sync every 1 second
 
 -- Player settings
 battleRoyale.player = {
@@ -185,6 +188,7 @@ function battleRoyale.setSeed(seed)
     battleRoyale.nextPowerUpTime = 0
     battleRoyale.meteoroidSpawnPoints = {}
     battleRoyale.powerUpSpawnPoints = {}
+    battleRoyale.safeZoneTargets = {}
     
     -- Pre-calculate meteoroid spawn points (like laser game)
     local time = 0
@@ -216,10 +220,26 @@ function battleRoyale.setSeed(seed)
         time = time + battleRoyale.random:random(2.0, 4.0)
     end
     
+    -- Pre-calculate safe zone target positions
+    time = 0
+    while time < battleRoyale.timer do
+        local margin = math.max(50, battleRoyale.safe_zone_radius + 50)
+        local targetInfo = {
+            time = time,
+            x = battleRoyale.random:random(margin, battleRoyale.screen_width - margin),
+            y = battleRoyale.random:random(margin, battleRoyale.screen_height - margin)
+        }
+        table.insert(battleRoyale.safeZoneTargets, targetInfo)
+        
+        -- Change target every 2 seconds
+        time = time + 2.0
+    end
+    
     debugConsole.addMessage(string.format(
-        "[BattleRoyale] Generated %d meteoroid and %d power-up spawn points with seed %d",
+        "[BattleRoyale] Generated %d meteoroid, %d power-up, and %d safe zone targets with seed %d",
         #battleRoyale.meteoroidSpawnPoints,
         #battleRoyale.powerUpSpawnPoints,
+        #battleRoyale.safeZoneTargets,
         seed
     ))
 end
@@ -291,16 +311,11 @@ function battleRoyale.update(dt)
         return
     end
 
-    -- Update safe zone movement using deterministic system (like laser game)
-    battleRoyale.safe_zone_move_timer = battleRoyale.safe_zone_move_timer + dt
-    -- Change direction more frequently and randomly (1-3 seconds) using deterministic random
-    local change_interval = 2 -- Fixed interval for consistency
-    if battleRoyale.safe_zone_move_timer >= change_interval then
-        battleRoyale.safe_zone_move_timer = 0
-        -- Generate new target position within screen bounds using deterministic random
-        local margin = math.max(50, battleRoyale.safe_zone_radius + 50)
-        battleRoyale.safe_zone_target_x = battleRoyale.random:random(margin, battleRoyale.screen_width - margin)
-        battleRoyale.safe_zone_target_y = battleRoyale.random:random(margin, battleRoyale.screen_height - margin)
+    -- Update safe zone movement using pre-calculated targets
+    if #battleRoyale.safeZoneTargets > 0 and battleRoyale.safeZoneTargets[1].time <= battleRoyale.gameTime then
+        local target = table.remove(battleRoyale.safeZoneTargets, 1)
+        battleRoyale.safe_zone_target_x = target.x
+        battleRoyale.safe_zone_target_y = target.y
         debugConsole.addMessage("[SafeZone] New target: " .. battleRoyale.safe_zone_target_x .. "," .. battleRoyale.safe_zone_target_y)
     end
     
@@ -413,8 +428,8 @@ function battleRoyale.update(dt)
                 
                 -- Send power-up collection to other players
                 if _G.localPlayer and _G.localPlayer.id then
-                    local message = string.format("battle_powerup_collected,%d,%.2f,%.2f,%s", 
-                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type)
+                    local message = string.format("battle_powerup_collected,%d,%.2f,%.2f,%s,%.2f,%d", 
+                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type, powerUp.spawnTime, powerUp.spawnSide)
                     
                     if _G.returnState == "hosting" and _G.serverClients then
                         for _, client in ipairs(_G.serverClients) do
@@ -488,6 +503,13 @@ function battleRoyale.update(dt)
     
     -- Update starfield
     battleRoyale.updateStars(dt)
+    
+    -- Send periodic synchronization to keep clients in sync
+    battleRoyale.sync_timer = battleRoyale.sync_timer + dt
+    if battleRoyale.sync_timer >= battleRoyale.sync_interval then
+        battleRoyale.sync_timer = 0
+        battleRoyale.sendGameStateSync()
+    end
 
     -- Update death timer and shake
     if battleRoyale.death_timer > 0 then
@@ -1196,7 +1218,9 @@ function battleRoyale.spawnPowerUpFromSpawnPoint(spawnInfo)
         type = pType,
         outside_circle_time = 0,
         speed = speed,
-        is_moving = true
+        is_moving = true,
+        spawnTime = spawnInfo.time,
+        spawnSide = side
     }
     
     -- Calculate angle towards safe zone center
@@ -1303,10 +1327,11 @@ function battleRoyale.updateAsteroids(dt)
     for i = #battleRoyale.asteroids, 1, -1 do
         local asteroid = battleRoyale.asteroids[i]
         
-        -- Apply music-based speed multiplier when music is playing
+        -- Apply deterministic speed multiplier based on game time
         local speedMultiplier = 1
-        if musicHandler.music and musicHandler.isPlaying then
-            speedMultiplier = 1.5 -- 50% faster when music is playing
+        -- Speed up after 10 seconds of gameplay
+        if battleRoyale.gameTime > 10 then
+            speedMultiplier = 1.5 -- 50% faster after 10 seconds
         end
         
         asteroid.x = asteroid.x + asteroid.vx * dt * speedMultiplier
@@ -1516,6 +1541,21 @@ end
 
 function battleRoyale.setPlayerColor(color)
     battleRoyale.playerColor = color
+end
+
+function battleRoyale.sendGameStateSync()
+    -- Only send sync from host
+    if _G.returnState == "hosting" and _G.serverClients then
+        local message = string.format("battle_sync,%.2f,%.2f,%.2f,%.2f", 
+            battleRoyale.gameTime, 
+            battleRoyale.center_x, 
+            battleRoyale.center_y, 
+            battleRoyale.safe_zone_radius)
+        
+        for _, client in ipairs(_G.serverClients) do
+            _G.safeSend(client, message)
+        end
+    end
 end
 
 return battleRoyale
