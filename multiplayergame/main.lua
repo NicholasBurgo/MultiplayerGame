@@ -10,6 +10,7 @@ local laserGame = require "lasergame"
 local battleRoyale = require "battleroyale"
 local raceGame = require "racegame"
 local characterCustomization = require "charactercustom"
+local scoreLobby = require "scorelobby"
 local debugConsole = require "debugconsole"
 local musicHandler = require "musichandler"
 local instructions = require "instructions"
@@ -29,9 +30,29 @@ local menuBackground = nil
 local lobbyBackground = nil
 local partyMode = false
 local currentPartyGame = nil
-local partyMode = false
-local currentPartyGame = nil
 local isFirstPartyInstruction = true
+
+-- Round tracking system
+local currentRound = 1
+local maxRounds = 3
+local roundWins = {} -- Track wins per player: {playerId = wins}
+local showScoreDisplay = false
+local scoreDisplayTimer = 0
+local scoreDisplayDuration = 3 -- Show for 3 seconds
+
+-- Mini game lineup system
+local miniGameLineup = {
+    "jumpgame",
+    "lasergame", 
+    "battleroyale",
+    "jumpgame", -- Repeat some games
+    "lasergame",
+    "battleroyale",
+    "jumpgame",
+    "lasergame",
+    "battleroyale"
+}
+local currentGameIndex = 1
 
 local gameState = "menu"  -- Can be "menu", "connecting", "customization", "playing", or "hosting"
 local highScore = 0 -- this is high score for jumpgame
@@ -75,6 +96,201 @@ function addDebugMessage(msg)
     end
 end
 
+-- Round tracking functions
+function initializeRoundWins()
+    roundWins = {}
+    for id, player in pairs(players) do
+        roundWins[id] = 0
+        -- Initialize game-specific tracking
+        players[id].jumpScore = 0
+        players[id].laserHits = 0
+        players[id].battleEliminated = false
+    end
+    if localPlayer.id then
+        roundWins[localPlayer.id] = 0
+        if players[localPlayer.id] then
+            players[localPlayer.id].jumpScore = 0
+            players[localPlayer.id].laserHits = 0
+            players[localPlayer.id].battleEliminated = false
+        end
+    end
+end
+
+function awardRoundWin(playerId)
+    if not roundWins[playerId] then
+        roundWins[playerId] = 0
+    end
+    roundWins[playerId] = roundWins[playerId] + 1
+    debugConsole.addMessage(string.format("[Round] Player %d wins round %d! Total wins: %d", playerId, currentRound, roundWins[playerId]))
+end
+
+function checkForScoreDisplay()
+    if currentRound % maxRounds == 0 then
+        showScoreDisplay = true
+        scoreDisplayTimer = scoreDisplayDuration
+        debugConsole.addMessage("[Score] Showing score display after round " .. currentRound)
+    end
+end
+
+function updateScoreDisplay(dt)
+    if showScoreDisplay then
+        scoreDisplayTimer = scoreDisplayTimer - dt
+        if scoreDisplayTimer <= 0 then
+            showScoreDisplay = false
+            currentRound = currentRound + 1
+            debugConsole.addMessage("[Round] Starting round " .. currentRound)
+        end
+    end
+end
+
+function showPostGame(gameType)
+    showPostGameScene = true
+    postGameSceneTimer = postGameSceneDuration
+    lastGameType = gameType
+    debugConsole.addMessage("[PostGame] Showing " .. gameType .. " completion scene")
+end
+
+function updatePostGameScene(dt)
+    if showPostGameScene then
+        postGameSceneTimer = postGameSceneTimer - dt
+        if postGameSceneTimer <= 0 then
+            showPostGameScene = false
+            debugConsole.addMessage("[PostGame] Scene ended, returning to lobby")
+        end
+    end
+end
+
+function drawPostGameScene()
+    if not showPostGameScene then return end
+    
+    -- Animated background with pulsing effect
+    local pulse = math.sin(love.timer.getTime() * 3) * 0.1 + 0.9
+    love.graphics.setColor(0.1, 0.1, 0.3, 0.9)
+    love.graphics.rectangle('fill', 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
+    
+    -- Animated border
+    love.graphics.setColor(0.2, 0.6, 1.0, pulse)
+    love.graphics.setLineWidth(5)
+    love.graphics.rectangle('line', 10, 10, love.graphics.getWidth() - 20, love.graphics.getHeight() - 20)
+    love.graphics.setLineWidth(1)
+    
+    -- Title with glow effect
+    love.graphics.setColor(1, 1, 0, 1)
+    love.graphics.printf("ROUND " .. currentRound .. " COMPLETE!", 
+        0, 100, love.graphics.getWidth(), "center")
+    
+    -- Subtitle
+    love.graphics.setColor(0.8, 0.8, 1, 1)
+    love.graphics.printf("Final Results", 
+        0, 150, love.graphics.getWidth(), "center")
+    
+    -- Player leaderboard with better styling
+    local y = 250
+    local sortedPlayers = {}
+    for id, wins in pairs(roundWins) do
+        table.insert(sortedPlayers, {id = id, wins = wins})
+    end
+    
+    -- Sort by wins (descending)
+    table.sort(sortedPlayers, function(a, b) return a.wins > b.wins end)
+    
+    for i, playerData in ipairs(sortedPlayers) do
+        local player = players[playerData.id]
+        if player then
+            -- Position background
+            local bgAlpha = 0.3 + (i == 1 and 0.3 or 0) -- Highlight first place
+            love.graphics.setColor(0.2, 0.2, 0.4, bgAlpha)
+            love.graphics.rectangle('fill', 200, y - 10, 400, 60)
+            
+            -- Position number
+            love.graphics.setColor(1, 1, 0, 1)
+            love.graphics.printf("#" .. i, 220, y + 10, 50, "center")
+            
+            -- Player color square (larger)
+            love.graphics.setColor(player.color[1], player.color[2], player.color[3])
+            love.graphics.rectangle('fill', 280, y, 40, 40)
+            
+            -- Player face if available
+            if player.facePoints then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(
+                    player.facePoints,
+                    280, y,
+                    0,
+                    40/100,
+                    40/100
+                )
+            end
+            
+            -- Player wins with larger text
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.printf(string.format("Player %d", playerData.id), 
+                340, y + 5, 120, "left")
+            
+            love.graphics.setColor(0.8, 0.8, 1, 1)
+            love.graphics.printf(string.format("%d wins", playerData.wins), 
+                340, y + 25, 120, "left")
+            
+            y = y + 70
+        end
+    end
+    
+    -- Timer with pulsing effect
+    local timerPulse = math.sin(love.timer.getTime() * 4) * 0.2 + 0.8
+    love.graphics.setColor(1, 1, 0, timerPulse)
+    love.graphics.printf(string.format("Next round in %.1f seconds...", postGameSceneTimer), 
+        0, love.graphics.getHeight() - 100, love.graphics.getWidth(), "center")
+    
+    -- Press any key message
+    love.graphics.setColor(0.6, 0.6, 1, 1)
+    love.graphics.printf("Press any key to continue", 
+        0, love.graphics.getHeight() - 60, love.graphics.getWidth(), "center")
+end
+
+function drawScoreDisplay()
+    if not showScoreDisplay then return end
+    
+    -- Semi-transparent overlay
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle('fill', 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
+    
+    -- Title
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.printf("ROUND " .. (currentRound - 1) .. " COMPLETE!", 
+        0, 100, love.graphics.getWidth(), "center")
+    
+    -- Player scores
+    local y = 200
+    local sortedPlayers = {}
+    for id, wins in pairs(roundWins) do
+        table.insert(sortedPlayers, {id = id, wins = wins})
+    end
+    
+    -- Sort by wins (descending)
+    table.sort(sortedPlayers, function(a, b) return a.wins > b.wins end)
+    
+    for i, playerData in ipairs(sortedPlayers) do
+        local player = players[playerData.id]
+        if player then
+            -- Player color
+            love.graphics.setColor(player.color[1], player.color[2], player.color[3])
+            love.graphics.rectangle('fill', 300, y, 30, 30)
+            
+            -- Player wins
+            love.graphics.setColor(1, 1, 1)
+            love.graphics.printf(string.format("Player %d: %d wins", playerData.id, playerData.wins), 
+                350, y + 5, 200, "left")
+            
+            y = y + 50
+        end
+    end
+    
+    -- Continue message
+    love.graphics.setColor(1, 1, 0)
+    love.graphics.printf("Press any key to continue...", 
+        0, love.graphics.getHeight() - 100, love.graphics.getWidth(), "center")
+end
+
 function safeSend(peer, message)
     if peer and peer.send then
         local success, err = pcall(function()
@@ -89,6 +305,7 @@ function safeSend(peer, message)
 end
 
 function love.load() -- music effect
+    print("[Main] Game loaded successfully!")
     players = {}
     debugConsole.init()
     characterCustomization.init()
@@ -151,11 +368,15 @@ function love.load() -- music effect
 
     checkServerStatus()
     jumpGame.load()
+    scoreLobby.init()
 end
 
 function love.update(dt)
+    -- print("[Main] Update running, gameState: " .. gameState) -- Uncomment this if needed
     musicHandler.update(dt)
     instructions.update(dt)
+    updateScoreDisplay(dt)
+    scoreLobby.update(dt)
 
     -- Track actual game transitions
     if gameState == "jumpgame" then
@@ -170,22 +391,25 @@ function love.update(dt)
 
     -- Only check party mode transitions when we're actually in the lobby
     if partyMode and gameState == "hosting" and not instructions.isTransitioning then
-        if currentPartyGame == "jumpgame" then
-            instructions.clear()    
-            love.keypressed("2")
-            currentPartyGame = "lasergame"
-        elseif currentPartyGame == "lasergame" then
-            instructions.clear()    
-            love.keypressed("3")
-            currentPartyGame = "battleroyale"
-        elseif currentPartyGame == "battleroyale" then
-            instructions.clear()    
-            love.keypressed("4")  
-            currentPartyGame = "racegame"
-        elseif currentPartyGame == "racegame" then 
+        -- Get next game from lineup
+        currentGameIndex = currentGameIndex + 1
+        if currentGameIndex > #miniGameLineup then
+            currentGameIndex = 1 -- Loop back to start
+        end
+        
+        local nextGame = miniGameLineup[currentGameIndex]
+        currentPartyGame = nextGame
+        
+        -- Start the next game
+        if nextGame == "jumpgame" then
             instructions.clear()    
             love.keypressed("1")
-            currentPartyGame = "jumpgame"
+        elseif nextGame == "lasergame" then
+            instructions.clear()    
+            love.keypressed("2")
+        elseif nextGame == "battleroyale" then
+            instructions.clear()    
+            love.keypressed("3")
         end
     end
 
@@ -234,18 +458,38 @@ function love.update(dt)
 
         if jumpGame.game_over then
             debugConsole.addMessage("Jump game over, returning to state: " .. returnState)
-            if returnState == "hosting" then
-                if players[localPlayer.id] then
-                    players[localPlayer.id].totalScore = (players[localPlayer.id].totalScore or 0) + jumpGame.current_round_score
-                    localPlayer.totalScore = players[localPlayer.id].totalScore
+            
+            -- Award round win to highest scoring player
+            local winnerId = localPlayer.id
+            local highestScore = jumpGame.current_round_score
+            
+            -- Check all players for highest score
+            for id, player in pairs(players) do
+                if player.jumpScore and player.jumpScore > highestScore then
+                    highestScore = player.jumpScore
+                    winnerId = id
                 end
+            end
+            
+            -- Only handle round wins in multiplayer mode
+            if returnState == "hosting" and serverClients and #serverClients > 0 then
+                awardRoundWin(winnerId)
+                checkForScoreDisplay()
+                
+                -- Broadcast round win
                 for _, client in ipairs(serverClients) do
-                    safeSend(client, string.format("total_score,%d,%d", localPlayer.id, localPlayer.totalScore))
+                    safeSend(client, string.format("round_win,%d", winnerId))
                 end
-            else
+            elseif returnState == "playing" and server and connected then
                 if server and connected then
-                    safeSend(server, "jump_score," .. jumpGame.current_round_score)
+                    safeSend(server, string.format("round_win,%d", winnerId))
                 end
+            end
+            
+            -- Only show score lobby after every 3 games
+            if currentRound % maxRounds == 0 then
+                debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
+                scoreLobby.show(currentRound, roundWins, players)
             end
             gameState = returnState
             debugConsole.addMessage("Returned to state: " .. gameState)
@@ -281,34 +525,60 @@ function love.update(dt)
         if laserGame.game_over then
             debugConsole.addMessage("Laser game transitioning to: " .. returnState)
             
-            if not laserGame.is_dead then
-                local finalScore = math.floor(laserGame.current_round_score)
-                
-                if returnState == "hosting" then
-                    if players[localPlayer.id] then
-                        local previousTotal = players[localPlayer.id].totalScore or 0
-                        players[localPlayer.id].totalScore = previousTotal + finalScore
-                        localPlayer.totalScore = players[localPlayer.id].totalScore
-                        
-                        debugConsole.addMessage(string.format("[Score] Host: Added %d to total, now: %d", 
-                            finalScore, localPlayer.totalScore))
-                        
-                        for _, client in ipairs(serverClients) do
-                            safeSend(client, string.format("total_score,%d,%d", 
-                                localPlayer.id, localPlayer.totalScore))
-                        end
-                    end
-                else
-                    if server and connected then
-                        safeSend(server, "laser_score," .. finalScore)
-                        debugConsole.addMessage(string.format("[Score] Client: Sending final score: %d", finalScore))
-                    end
+            -- Award round win to player hit least (or all tied players)
+            local minHits = laserGame.hitCount or 0
+            local winners = {}
+            
+            -- Include local player's hit count
+            if localPlayer.id and players[localPlayer.id] then
+                local localHits = players[localPlayer.id].laserHits or 0
+                if localHits < minHits then
+                    minHits = localHits
+                    winners = {localPlayer.id}
+                elseif localHits == minHits then
+                    table.insert(winners, localPlayer.id)
                 end
             end
             
+            -- Find minimum hit count among all players
+            for id, player in pairs(players) do
+                local playerHits = player.laserHits or 0
+                if playerHits < minHits then
+                    minHits = playerHits
+                    winners = {id}
+                elseif playerHits == minHits and id ~= localPlayer.id then
+                    table.insert(winners, id)
+                end
+            end
+            
+            -- Award wins to all tied players (only in multiplayer mode)
+            if returnState == "hosting" and serverClients and #serverClients > 0 then
+                for _, winnerId in ipairs(winners) do
+                    awardRoundWin(winnerId)
+                end
+                checkForScoreDisplay()
+                
+                -- Broadcast round wins
+                for _, client in ipairs(serverClients) do
+                    for _, winnerId in ipairs(winners) do
+                        safeSend(client, string.format("round_win,%d", winnerId))
+                    end
+                end
+            elseif returnState == "playing" and server and connected then
+                for _, winnerId in ipairs(winners) do
+                    safeSend(server, string.format("round_win,%d", winnerId))
+                end
+            end
+            
+            -- Only show score lobby after every 3 games
+            if currentRound % maxRounds == 0 then
+                debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
+                scoreLobby.show(currentRound, roundWins, players)
+            end
             gameState = returnState
         end
     elseif gameState == "battleroyale" then
+        debugConsole.addMessage("[Update] In battle royale update")
         if returnState == "hosting" then
             updateServer()
         else
@@ -319,40 +589,54 @@ function love.update(dt)
 
         if battleRoyale.game_over and battleRoyale.death_animation_done then
             debugConsole.addMessage("Battle Royale game over, returning to state: " .. returnState)
-            if returnState == "hosting" then
-                if players[localPlayer.id] then
-                    players[localPlayer.id].totalScore = 
-                        (players[localPlayer.id].totalScore or 0) + battleRoyale.current_round_score
-                    localPlayer.totalScore = players[localPlayer.id].totalScore
+            
+            -- Award round win to last person standing (not the one who just died)
+            local winnerId = nil
+            for id, player in pairs(players) do
+                if player.battleX and player.battleY and not player.battleEliminated then
+                    winnerId = id
+                    break
                 end
-                for _, client in ipairs(serverClients) do
-                    safeSend(client, string.format("total_score,%d,%d", 
-                        localPlayer.id, localPlayer.totalScore))
+            end
+            
+            if winnerId then
+                if returnState == "hosting" and serverClients and #serverClients > 0 then
+                    awardRoundWin(winnerId)
+                    checkForScoreDisplay()
+                    
+                    -- Broadcast round win
+                    for _, client in ipairs(serverClients) do
+                        safeSend(client, string.format("round_win,%d", winnerId))
+                    end
+                elseif returnState == "playing" and server and connected then
+                    safeSend(server, string.format("round_win,%d", winnerId))
+                end
+            end
+            
+            -- Check if this was the last player in party mode
+            if partyMode then
+                local remainingPlayers = 0
+                for id, player in pairs(players) do
+                    if id ~= localPlayer.id and player.battleX and player.battleY and not player.battleEliminated then
+                        remainingPlayers = remainingPlayers + 1
+                    end
                 end
                 
-                -- Check if this was the last player in party mode
-                if partyMode then
-                    local remainingPlayers = 0
-                    for id, player in pairs(players) do
-                        if id ~= localPlayer.id and player.battleX and player.battleY then
-                            remainingPlayers = remainingPlayers + 1
-                        end
-                    end
-                    
                     if remainingPlayers == 0 then
                         -- Last player died, transition to next game
                         debugConsole.addMessage("Last player eliminated, transitioning to next game")
                         if currentPartyGame == "battleroyale" then
                             instructions.clear()
-                            love.keypressed("4") -- Go to race game
-                            currentPartyGame = "racegame"
+                            love.keypressed("1") -- Go to jump game
+                            currentPartyGame = "jumpgame"
                         end
                     end
-                end
-            else
-                if server and connected then
-                    safeSend(server, "battleroyale_score," .. battleRoyale.current_round_score)
-                end
+            end
+            
+            -- Only show score lobby after every 3 games
+            if currentRound % maxRounds == 0 then
+                debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
+                scoreLobby.show(currentRound, roundWins, players)
             end
             gameState = returnState
             debugConsole.addMessage("Returned to state: " .. gameState)
@@ -463,10 +747,30 @@ function updateServer()
         local battleX = battleRoyale.player.x
         local battleY = battleRoyale.player.y 
         
+        -- Include laser data
+        local laserData = ""
+        if battleRoyale.lasers and #battleRoyale.lasers > 0 then
+            local laserStrings = {}
+            for i, laser in ipairs(battleRoyale.lasers) do
+                table.insert(laserStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                    laser.x, laser.y, laser.vx, laser.vy, laser.time, laser.duration, laser.size))
+            end
+            laserData = "|" .. table.concat(laserStrings, "|")
+        end
+        
+        -- Host controls all game elements - no need to sync meteoroids/power-ups from clients
+        
+        -- Include elimination status for host
+        local eliminationStatus = localPlayer.battleEliminated and "1" or "0"
+        
+        -- Include safe zone data
+        local safeZoneData = string.format("%.2f,%.2f,%.2f", 
+            battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
+        
         for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f",
+            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
                 battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], eliminationStatus, safeZoneData, laserData))
         end
     end
 
@@ -591,9 +895,25 @@ function updateClient()
         if gameState == "battleroyale" then
             local battleX = battleRoyale.player.x
             local battleY = battleRoyale.player.y
-            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
+            
+            -- Include laser data
+            local laserData = ""
+            if battleRoyale.lasers and #battleRoyale.lasers > 0 then
+                local laserStrings = {}
+                for i, laser in ipairs(battleRoyale.lasers) do
+                    table.insert(laserStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
+                        laser.x, laser.y, laser.vx, laser.vy, laser.time, laser.duration, laser.size))
+                end
+                laserData = "|" .. table.concat(laserStrings, "|")
+            end
+            
+            -- Clients only send their position and laser data - host controls everything else
+            local eliminationStatus = localPlayer.battleEliminated and "1" or "0"
+            local safeZoneData = string.format("%.2f,%.2f,%.2f", 
+                battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
+            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
                 localPlayer.id, battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], eliminationStatus, safeZoneData, laserData))
         end
     end
 end
@@ -605,6 +925,7 @@ function love.draw()
         love.graphics.setColor(1, 1, 1, 1)
         laserGame.draw(players, localPlayer.id)
     elseif gameState == "battleroyale" then
+        debugConsole.addMessage("[Draw] Drawing battle royale game")
         battleRoyale.draw(players, localPlayer.id)
     elseif gameState == "racegame" then
         raceGame.draw(players, localPlayer.id)
@@ -699,6 +1020,12 @@ function love.draw()
     love.graphics.print("Game State: " .. gameState, 10, 30)
     love.graphics.print("Players: " .. #table_keys(players), 10, 50)
 
+    -- Draw score lobby if showing
+    scoreLobby.draw()
+    
+    -- Draw score display if showing
+    drawScoreDisplay()
+    
     -- Draw debug console last so it's always on top
     debugConsole.draw()
 end
@@ -804,9 +1131,15 @@ function love.mousepressed(x, y, button)
             inputField.active = false
         end
     end
+    
+    -- Handle game-specific mouse input
+    -- Battle royale uses spacebar for power-ups, not mouse
 end
 
 function love.keypressed(key)
+    print("[Main] Key pressed: " .. key .. " in gameState: " .. gameState)
+    debugConsole.addMessage("[Main] Key pressed: " .. key .. " in gameState: " .. gameState)
+    
     if key == "f3" then  
         debugConsole.toggle()
     end
@@ -819,6 +1152,14 @@ function love.keypressed(key)
 
     if gameState == "racegame" then
         raceGame.keypressed(key)
+        return
+    end
+
+    -- Handle spacebar specifically for battle royale
+    if gameState == "battleroyale" and key == " " then
+        print("[Main] Spacebar detected in battle royale, calling battleRoyale.keypressed")
+        debugConsole.addMessage("[Main] Spacebar detected in battle royale, calling battleRoyale.keypressed")
+        battleRoyale.keypressed(key)
         return
     end
 
@@ -845,6 +1186,7 @@ function love.keypressed(key)
         
                 gameState = "jumpgame"
                 returnState = "hosting"
+                initializeRoundWins()
                 jumpGame.reset(players)
                 jumpGame.setPlayerColor(localPlayer.color)
         
@@ -865,6 +1207,7 @@ function love.keypressed(key)
             instructions.show("lasergame", function()
                 gameState = "lasergame"
                 returnState = "hosting"
+                initializeRoundWins()
                 local seed = os.time() + love.timer.getTime() * 10000
                 laserGame.reset()
                 laserGame.setSeed(seed)
@@ -882,14 +1225,18 @@ function love.keypressed(key)
             end
             
             instructions.show("battleroyale", function()
+                print("[Main] Switching to battle royale mode!")
                 gameState = "battleroyale"
                 returnState = "hosting"
+                initializeRoundWins()
                 battleRoyale.reset()
                 battleRoyale.setPlayerColor(localPlayer.color)
                 
                 -- Only send game start after instructions
+                debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients")
                 for _, client in ipairs(serverClients) do
                     safeSend(client, "start_battleroyale_game")
+                    debugConsole.addMessage("[Host] Sent battle royale start to client")
                 end
             end)
         elseif key == "4" then
@@ -935,7 +1282,21 @@ function love.keypressed(key)
         end
     end
 
-    if gameState == "battleroyale" then
+    -- Handle score lobby skip
+    if scoreLobby.keypressed(key) then
+        return
+    end
+
+    -- Handle score display skip
+    if showScoreDisplay then
+        showScoreDisplay = false
+        currentRound = currentRound + 1
+        debugConsole.addMessage("[Round] Starting round " .. currentRound)
+        return
+    end
+
+    -- Battle royale spacebar handled above, other keys handled here
+    if gameState == "battleroyale" and key ~= " " then
         battleRoyale.keypressed(key)
     end
 end
@@ -1133,19 +1494,46 @@ function handleServerMessage(id, data)
     end
 
     -- Handle battle royale positions
-    if data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)") then
-        local playerId, x, y, r, g, b = data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
-        playerId = tonumber(playerId)
+    if data:match("battle_position,(%d+),") then
+        -- Parse the message step by step to avoid regex issues
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        if #parts >= 8 then
+            local playerId = tonumber(parts[2])
+            local x = tonumber(parts[3])
+            local y = tonumber(parts[4])
+            local r = tonumber(parts[5])
+            local g = tonumber(parts[6])
+            local b = tonumber(parts[7])
+            local eliminationStatus = parts[8]
+            local safeZoneData = parts[9]
+            local laserData = ""
+            if #parts > 9 then
+                laserData = parts[10]
+            end
+            
         if not players[playerId] then
             players[playerId] = {}
+            players[playerId].battleEliminated = false -- Initialize as not eliminated
         end
-        players[playerId].battleX = tonumber(x)
-        players[playerId].battleY = tonumber(y)
-        players[playerId].color = {tonumber(r), tonumber(g), tonumber(b)}
-        
-        for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
-                playerId, x, y, r, g, b))
+        players[playerId].battleX = x
+        players[playerId].battleY = y
+        players[playerId].color = {r, g, b}
+        players[playerId].battleEliminated = (eliminationStatus == "1")
+        players[playerId].battleLasers = laserData
+        players[playerId].battleSafeZone = safeZoneData
+            
+            -- Debug: Show what we received and are sending
+            debugConsole.addMessage("[Server] Received player " .. playerId .. " elimination: " .. eliminationStatus)
+            debugConsole.addMessage("[Server] Sending player " .. playerId .. " elimination: " .. eliminationStatus)
+            
+            for _, client in ipairs(serverClients) do
+                safeSend(client, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
+                    playerId, x, y, r, g, b, eliminationStatus, safeZoneData, laserData))
+            end
         end
         return
     end
@@ -1247,10 +1635,29 @@ function handleServerMessage(id, data)
         return
     end
 
+    -- Handle round win messages
+    if data:match("^round_win,(%d+)") then
+        local winnerId = tonumber(data:match("^round_win,(%d+)"))
+        if winnerId then
+            awardRoundWin(winnerId)
+            checkForScoreDisplay()
+            
+            -- Broadcast to all clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, data)
+            end
+        end
+        return
+    end
+
     debugConsole.addMessage("[Server] Unhandled message from player " .. id .. ": " .. data)
 end
 
 function handleClientMessage(data)
+    debugConsole.addMessage("[Client] Received: " .. data)
+    if data == "start_battleroyale_game" then
+        debugConsole.addMessage("[Client] RECEIVED BATTLE ROYALE START MESSAGE!")
+    end
     -- instructions
     if data == "show_jump_instructions" then
         instructions.show("jumpgame", function() end)
@@ -1369,10 +1776,13 @@ function handleClientMessage(data)
     end
 
     if data == "start_battleroyale_game" then
+        debugConsole.addMessage("[Client] Starting battle royale game")
         gameState = "battleroyale"
         returnState = "playing"
-        battleRoyale.reset()
+        battleRoyale.load()
         battleRoyale.setPlayerColor(localPlayer.color)
+        debugConsole.addMessage("[Client] Battle royale game state set to: " .. gameState)
+        debugConsole.addMessage("[Client] Battle royale loaded successfully")
         return
     end
 
@@ -1429,15 +1839,41 @@ function handleClientMessage(data)
     end
 
     if data:match("^battle_position,") then
-        local id, x, y, r, g, b = data:match("battle_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
-        id = tonumber(id)
-        if id and id ~= localPlayer.id then
-            if not players[id] then
-                players[id] = {}
+        -- Parse the message step by step to avoid regex issues
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        if #parts >= 8 then
+            local id = tonumber(parts[2])
+            local x = tonumber(parts[3])
+            local y = tonumber(parts[4])
+            local r = tonumber(parts[5])
+            local g = tonumber(parts[6])
+            local b = tonumber(parts[7])
+            local eliminationStatus = parts[8]
+            local safeZoneData = parts[9]
+            local laserData = ""
+            if #parts > 9 then
+                laserData = parts[10]
             end
-            players[id].battleX = tonumber(x)
-            players[id].battleY = tonumber(y)
-            players[id].color = {tonumber(r), tonumber(g), tonumber(b)}
+            
+            if id and id ~= localPlayer.id then
+                if not players[id] then
+                    players[id] = {}
+                    players[id].battleEliminated = false -- Initialize as not eliminated
+                end
+                players[id].battleX = x
+                players[id].battleY = y
+                players[id].color = {r, g, b}
+                players[id].battleEliminated = (eliminationStatus == "1")
+                players[id].battleLasers = laserData
+                players[id].battleSafeZone = safeZoneData
+                
+                -- Debug: Show what we received
+                debugConsole.addMessage("[Client] Player " .. id .. " elimination: " .. eliminationStatus .. " -> " .. tostring(players[id].battleEliminated))
+            end
         end
         return
     end
@@ -1541,6 +1977,16 @@ function handleClientMessage(data)
         partyMode = false
         currentPartyGame = nil
         gameState = "playing"
+        return
+    end
+
+    -- Handle round win messages
+    if data:match("^round_win,(%d+)") then
+        local winnerId = tonumber(data:match("^round_win,(%d+)"))
+        if winnerId then
+            awardRoundWin(winnerId)
+            checkForScoreDisplay()
+        end
         return
     end
 

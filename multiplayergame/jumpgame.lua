@@ -238,19 +238,9 @@ function jumpGame.update(dt) -- added music reaction
             jumpGame.timer = 0
             jumpGame.game_over = true
 
-            -- Send score to server/clients
-            if _G.gameState == "hosting" then
-                -- Update own score first
-                if _G.players[_G.localPlayer.id] then
-                    _G.players[_G.localPlayer.id].totalScore = (_G.players[_G.localPlayer.id].totalScore or 0) + jumpGame.current_round_score
-                    _G.localPlayer.totalScore = _G.players[_G.localPlayer.id].totalScore
-                end
-                -- Broadcast to clients
-                for _, client in ipairs(_G.serverClients or {}) do
-                    safeSend(client, "jump_score," .. math.floor(jumpGame.current_round_score))
-                end
-            elseif _G.server then
-                safeSend(_G.server, "jump_score," .. math.floor(jumpGame.current_round_score))
+            -- Store score in players table for round win determination
+            if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+                _G.players[_G.localPlayer.id].jumpScore = jumpGame.current_round_score
             end
             
             _G.gameState = returnState
@@ -359,15 +349,7 @@ function jumpGame.draw(playersTable, localPlayerId)
             )
         end
         
-        -- Draw local player's total score above them
-        love.graphics.setColor(1, 1, 0)
-        love.graphics.printf(
-            "Score: " .. (playersTable[localPlayerId].totalScore or 0),
-            jumpGame.player.rect.x - 50,
-            jumpGame.player.rect.y - 40,
-            100,
-            "center"
-        )
+        -- Score display removed
     end
 
     -- draw ghost players and scores
@@ -396,15 +378,7 @@ function jumpGame.draw(playersTable, localPlayerId)
                     )
                 end
                 
-                -- Draw total score above ghost
-                love.graphics.setColor(1, 1, 0, 0.8)
-                love.graphics.printf(
-                    "Score: " .. (player.totalScore or 0),
-                    player.jumpX - 50,
-                    player.jumpY - 40,
-                    100,
-                    "center"
-                )
+                -- Score display removed
             end
         end
     end

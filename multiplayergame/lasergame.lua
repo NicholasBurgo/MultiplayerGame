@@ -20,6 +20,7 @@ laserGame.current_round_score = 0
 laserGame.is_penalized = false
 laserGame.penalty_timer = 0
 laserGame.PENALTY_DURATION = 1.0
+laserGame.hitCount = 0
 
 -- seed stuff
 laserGame.seed = 0
@@ -351,32 +352,9 @@ function laserGame.update(dt)
         laserGame.game_over = true
         laserGame.puddles = {}
         
-        local finalScore = math.floor(laserGame.current_round_score)
-        
-        if _G.gameState == "hosting" then
-            -- Get previous total
-            local previousTotal = (_G.players[_G.localPlayer.id] and _G.players[_G.localPlayer.id].totalScore) or 0
-            
-            if _G.players[_G.localPlayer.id] then
-                _G.players[_G.localPlayer.id].totalScore = previousTotal + finalScore
-                _G.localPlayer.totalScore = _G.players[_G.localPlayer.id].totalScore
-                
-                debugConsole.addMessage(string.format("[Laser] Game completed with score: %d, adding to %d for new total: %d", 
-                    finalScore, previousTotal, _G.localPlayer.totalScore))
-                    
-                -- Broadcast final total to clients
-                if _G.serverClients then
-                    for _, client in ipairs(_G.serverClients) do
-                        safeSend(client, string.format("total_score,%d,%d", 
-                            _G.localPlayer.id, 
-                            _G.players[_G.localPlayer.id].totalScore))
-                    end
-                end
-            end
-        else
-            if _G.server then
-                safeSend(_G.server, "laser_score," .. finalScore)
-            end
+        -- Store hit count in players table for round win determination
+        if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+            _G.players[_G.localPlayer.id].laserHits = laserGame.hitCount
         end
         
         if _G.returnState then
@@ -550,14 +528,7 @@ function laserGame.draw(playersTable, localPlayerId)
                     )
                 end
                 
-                love.graphics.setColor(1, 1, 0, 0.8)
-                love.graphics.printf(
-                    "Score: " .. math.floor(player.totalScore or 0),
-                    player.laserX - 50,
-                    player.laserY - laserGame.player_size - 40,
-                    100,
-                    "center"
-                )
+                -- Score display removed
             end
         end
     end
@@ -594,17 +565,7 @@ function laserGame.draw(playersTable, localPlayerId)
         )
     end
     
-    -- Draw local player's total score
-    if playersTable and playersTable[localPlayerId] then
-        love.graphics.setColor(1, 1, 0)
-        love.graphics.printf(
-            "Score: " .. math.floor(playersTable[localPlayerId].totalScore or 0),
-            laserGame.player.x - 50,
-            laserGame.player.y - laserGame.player_size - 40,
-            100,
-            "center"
-        )
-    end
+    -- Score display removed
     
     -- Pop graphics state
     love.graphics.pop()
@@ -666,6 +627,7 @@ function laserGame.penalizePlayer()
         laserGame.is_penalized = true
         laserGame.penalty_timer = laserGame.PENALTY_DURATION
         laserGame.current_round_score = 0
+        laserGame.hitCount = laserGame.hitCount + 1
         
         -- Play penalty sound
         if laserGame.sounds.death:isPlaying() then
@@ -683,7 +645,7 @@ function laserGame.penalizePlayer()
             )
         end
         
-        debugConsole.addMessage("[Laser] Player hit! Score reset to 0")
+        debugConsole.addMessage("[Laser] Player hit! Score reset to 0, hits: " .. laserGame.hitCount)
     end
 end
 
