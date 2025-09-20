@@ -30,6 +30,7 @@ local nextClientId = 1
 local menuBackground = nil
 local lobbyBackground = nil
 local partyMode = false
+_G.partyMode = partyMode -- Make it globally accessible
 local currentPartyGame = nil
 local isFirstPartyInstruction = true
 
@@ -508,6 +509,70 @@ function love.update(dt)
         currentPartyGame = "racegame"
     end
 
+    -- Check for party mode transition flag
+    if _G.partyModeTransition then
+        _G.partyModeTransition = false
+        debugConsole.addMessage("[PartyMode] Transitioning to next game after battle royale")
+        
+        -- Reset battle royale state
+        battleRoyale.game_over = false
+        battleRoyale.death_animation_done = false
+        
+        -- Reset all player elimination states for next game
+        for id, player in pairs(players) do
+            player.battleEliminated = false
+        end
+        if localPlayer then
+            localPlayer.battleEliminated = false
+        end
+        
+        -- Get next game from lineup
+        currentGameIndex = currentGameIndex + 1
+        if currentGameIndex > #miniGameLineup then
+            currentGameIndex = 1 -- Loop back to start
+        end
+        
+        local nextGame = miniGameLineup[currentGameIndex]
+        currentPartyGame = nextGame
+        debugConsole.addMessage("[Party Mode] Next game: " .. nextGame)
+        
+        -- Start the next game
+        if nextGame == "jumpgame" then
+            instructions.clear()    
+            love.keypressed("1")
+        elseif nextGame == "lasergame" then
+            instructions.clear()    
+            love.keypressed("2")
+        elseif nextGame == "battleroyale" then
+            instructions.clear()    
+            -- For party mode transitions, we need to handle battle royale specially
+            -- because clients need to receive the start message
+            debugConsole.addMessage("[PartyMode] Starting battle royale transition")
+            instructions.show("battleroyale", function()
+                print("[Main] Switching to battle royale mode in party mode!")
+                debugConsole.addMessage("[Main] Starting battle royale in party mode - party mode: " .. tostring(_G.partyMode))
+                gameState = "battleroyale"
+                returnState = "hosting"
+                _G.returnState = "hosting"
+                _G.gameState = "battleroyale"
+                _G.players = players
+                _G.localPlayer = localPlayer
+                initializeRoundWins()
+                local seed = os.time() + love.timer.getTime() * 10000
+                battleRoyale.reset()
+                battleRoyale.setSeed(seed)
+                battleRoyale.setPlayerColor(localPlayer.color)
+                
+                -- Send game start to all clients
+                debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients in party mode")
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, "start_battleroyale_game," .. seed)
+                    debugConsole.addMessage("[Host] Sent battle royale start to client in party mode")
+                end
+            end)
+        end
+    end
+
     -- Only check party mode transitions when we're actually in the lobby
     if partyMode and gameState == "hosting" and not instructions.isTransitioning then
         -- Get next game from lineup
@@ -528,7 +593,31 @@ function love.update(dt)
             love.keypressed("2")
         elseif nextGame == "battleroyale" then
             instructions.clear()    
-            love.keypressed("3")
+            -- For party mode transitions, we need to handle battle royale specially
+            -- because clients need to receive the start message
+            debugConsole.addMessage("[PartyMode] Starting battle royale transition (regular check)")
+            instructions.show("battleroyale", function()
+                print("[Main] Switching to battle royale mode in party mode (regular check)!")
+                debugConsole.addMessage("[Main] Starting battle royale in party mode (regular check) - party mode: " .. tostring(_G.partyMode))
+                gameState = "battleroyale"
+                returnState = "hosting"
+                _G.returnState = "hosting"
+                _G.gameState = "battleroyale"
+                _G.players = players
+                _G.localPlayer = localPlayer
+                initializeRoundWins()
+                local seed = os.time() + love.timer.getTime() * 10000
+                battleRoyale.reset()
+                battleRoyale.setSeed(seed)
+                battleRoyale.setPlayerColor(localPlayer.color)
+                
+                -- Send game start to all clients
+                debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients in party mode (regular check)")
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, "start_battleroyale_game," .. seed)
+                    debugConsole.addMessage("[Host] Sent battle royale start to client in party mode (regular check)")
+                end
+            end)
         end
     end
 
@@ -610,8 +699,14 @@ function love.update(dt)
                 debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
                 scoreLobby.show(currentRound, roundWins, players)
             end
-            gameState = returnState
-            debugConsole.addMessage("Returned to state: " .. gameState)
+            
+            -- Only return to lobby if not in party mode transition
+            if not _G.partyModeTransition then
+                gameState = returnState
+                debugConsole.addMessage("Returned to state: " .. gameState)
+            else
+                debugConsole.addMessage("Party mode transition active, staying in jump game state")
+            end
             jumpGame.reset()
         end
     elseif gameState == "lasergame" then
@@ -694,7 +789,14 @@ function love.update(dt)
                 debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
                 scoreLobby.show(currentRound, roundWins, players)
             end
-            gameState = returnState
+            
+            -- Only return to lobby if not in party mode transition
+            if not _G.partyModeTransition then
+                gameState = returnState
+                debugConsole.addMessage("Returned to state: " .. gameState)
+            else
+                debugConsole.addMessage("Party mode transition active, staying in laser game state")
+            end
         end
     elseif gameState == "battleroyale" then
         -- Debug test - show message every 3 seconds
@@ -753,15 +855,12 @@ function love.update(dt)
                     end
                 end
                 
-                    if remainingPlayers == 0 then
-                        -- Last player died, transition to next game
-                        debugConsole.addMessage("Last player eliminated, transitioning to next game")
-                        if currentPartyGame == "battleroyale" then
-                            instructions.clear()
-                            love.keypressed("1") -- Go to jump game
-                            currentPartyGame = "jumpgame"
-                        end
-                    end
+                if remainingPlayers == 0 then
+                    -- Last player died, transition to next game
+                    debugConsole.addMessage("Last player eliminated, transitioning to next game")
+                    _G.partyModeTransition = true
+                    debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                end
             end
             
             -- Only show score lobby after every 3 games
@@ -769,8 +868,15 @@ function love.update(dt)
                 debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
                 scoreLobby.show(currentRound, roundWins, players)
             end
-            gameState = returnState
-            debugConsole.addMessage("Returned to state: " .. gameState)
+            
+            -- Only return to lobby if not in party mode
+            if not partyMode then
+                gameState = returnState
+                debugConsole.addMessage("Returned to state: " .. gameState)
+            else
+                debugConsole.addMessage("Party mode active, staying in battle royale state for next game")
+            end
+            battleRoyale.reset()
         end
     elseif gameState == "hosting" then
         updateServer()
@@ -1123,13 +1229,6 @@ function love.draw()
                     "center"
                 )
                 
-                -- Draw position info for debugging
-                love.graphics.setColor(1, 1, 1)
-                love.graphics.print(string.format(
-                    "x: %.0f\ny: %.0f", 
-                    player.x,
-                    player.y
-                ), player.x + 55, player.y)
             end
         end
         
@@ -1364,9 +1463,13 @@ function love.keypressed(key)
             
             instructions.show("battleroyale", function()
                 print("[Main] Switching to battle royale mode!")
+                debugConsole.addMessage("[Main] Starting battle royale - party mode: " .. tostring(_G.partyMode))
                 gameState = "battleroyale"
                 returnState = "hosting"
                 _G.returnState = "hosting"
+                _G.gameState = "battleroyale"
+                _G.players = players
+                _G.localPlayer = localPlayer
                 initializeRoundWins()
                 local seed = os.time() + love.timer.getTime() * 10000
                 battleRoyale.reset()
@@ -1402,7 +1505,9 @@ function love.keypressed(key)
     if key == "p" then
         if gameState == "hosting" then
             partyMode = not partyMode
+            _G.partyMode = partyMode -- Update global reference
             debugConsole.addMessage("[Party Mode] " .. (partyMode and "Enabled" or "Disabled"))
+            debugConsole.addMessage("[Party Mode] Global party mode set to: " .. tostring(_G.partyMode))
             if partyMode then
                 isFirstPartyInstruction = true  -- Reset the flag when party mode starts
                 -- Start with jump game by simulating '1' key press
@@ -1763,6 +1868,7 @@ function handleServerMessage(id, data)
 
     if data == "request_party_mode" then
         partyMode = true
+        _G.partyMode = partyMode -- Update global reference
         gameState = "jumpgame"
         currentPartyGame = "jumpgame"
         returnState = "hosting"
@@ -1883,6 +1989,9 @@ function handleClientMessage(data)
             gameState = "battleroyale"
             returnState = "playing"
             _G.returnState = "playing"
+            _G.gameState = "battleroyale"
+            _G.players = players
+            _G.localPlayer = localPlayer
             battleRoyale.load()
             battleRoyale.setSeed(seed)
             battleRoyale.setPlayerColor(localPlayer.color)
@@ -1904,6 +2013,12 @@ function handleClientMessage(data)
 
     if data == "start_party_music" then
         musicHandler.loadPartyMusic()
+        return
+    end
+
+    if data == "party_mode_transition" then
+        debugConsole.addMessage("[Client] Received party mode transition signal")
+        _G.partyModeTransition = true
         return
     end
 
@@ -2217,6 +2332,7 @@ function handleClientMessage(data)
 
     if data == "start_party_mode" then
         partyMode = true
+        _G.partyMode = partyMode -- Update global reference
         gameState = "jumpgame"
         currentPartyGame = "jumpgame"
         returnState = "playing"
@@ -2227,6 +2343,7 @@ function handleClientMessage(data)
     
     if data == "end_party_mode" then
         partyMode = false
+        _G.partyMode = partyMode -- Update global reference
         currentPartyGame = nil
         gameState = "playing"
         return
@@ -2289,7 +2406,11 @@ function handleClientMessage(data)
             end
             
             if not found then
-                debugConsole.addMessage("[Client] WARNING: Could not find power-up to remove!")
+                debugConsole.addMessage("[Client] WARNING: Could not find power-up to remove! Looking for: type=" .. type .. ", spawnTime=" .. spawnTime .. ", spawnSide=" .. spawnSide)
+                debugConsole.addMessage("[Client] Available power-ups: " .. #battleRoyale.powerUps)
+                for i, powerUp in ipairs(battleRoyale.powerUps) do
+                    debugConsole.addMessage("[Client] Power-up " .. i .. ": type=" .. powerUp.type .. ", spawnTime=" .. (powerUp.spawnTime or "nil") .. ", spawnSide=" .. (powerUp.spawnSide or "nil"))
+                end
             end
         end
         return

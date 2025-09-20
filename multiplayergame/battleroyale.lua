@@ -31,7 +31,9 @@ battleRoyale.shrink_padding_x = 0
 battleRoyale.shrink_padding_y = 0
 battleRoyale.max_shrink_padding_x = 300
 battleRoyale.max_shrink_padding_y = 200
-battleRoyale.timer = (musicHandler.beatInterval * 20) -- 40 seconds
+-- Use safe timer calculation with fallback for party mode
+local beatInterval = musicHandler.beatInterval or 2.0 -- Fallback to 2 seconds if not set
+battleRoyale.timer = beatInterval * 20 -- 40 seconds
 battleRoyale.safe_zone_radius = 450
 battleRoyale.center_x = 400
 battleRoyale.center_y = 300
@@ -95,6 +97,7 @@ battleRoyale.star_direction = 0 -- Global direction for all stars
 
 function battleRoyale.load()
     debugConsole.addMessage("[BattleRoyale] Loading battle royale game")
+    debugConsole.addMessage("[BattleRoyale] Party mode status: " .. tostring(_G and _G.partyMode or "nil"))
     -- Reset game state
     battleRoyale.game_over = false
     battleRoyale.current_round_score = 0
@@ -113,7 +116,9 @@ function battleRoyale.load()
     battleRoyale.player.jump_count = 0
     battleRoyale.player.has_double_jumped = false
     battleRoyale.player.on_ground = false
-    battleRoyale.timer = (musicHandler.beatInterval * 20) -- 40 seconds
+    -- Use safe timer calculation with fallback for party mode
+    local beatInterval = musicHandler.beatInterval or 2.0 -- Fallback to 2 seconds if not set
+    battleRoyale.timer = beatInterval * 20 -- 40 seconds
     battleRoyale.gameTime = 0
     debugConsole.addMessage("[BattleRoyale] Battle royale loaded successfully")
 
@@ -158,6 +163,21 @@ function battleRoyale.load()
         last_movement_angle = 0,
         teleport_charges = 0
     }
+    
+    -- In party mode, ensure player starts in center of safe zone
+    debugConsole.addMessage("[BattleRoyale] Checking party mode: " .. tostring(_G and _G.partyMode or "nil") .. " (type: " .. type(_G and _G.partyMode) .. ")")
+    if _G and _G.partyMode == true then
+        battleRoyale.player.x = 400
+        battleRoyale.player.y = 300
+        battleRoyale.center_x = 400
+        battleRoyale.center_y = 300
+        battleRoyale.safe_zone_radius = 450
+        
+        -- Debug music handler state
+        debugConsole.addMessage("[PartyMode] Player positioned in center of safe zone")
+    else
+        debugConsole.addMessage("[BattleRoyale] Party mode not detected, using normal initialization")
+    end
     
     -- Initialize spacebar flag
     battleRoyale.spacebarPressed = false
@@ -262,6 +282,26 @@ function battleRoyale.update(dt)
     if not battleRoyale.game_started then
         battleRoyale.start_timer = math.max(0, battleRoyale.start_timer - dt)
         battleRoyale.game_started = battleRoyale.start_timer == 0
+        
+        -- In party mode, give extra time for players to get into safe zone
+        if _G and _G.partyMode == true and battleRoyale.game_started then
+            -- Reset safe zone to full size when game starts in party mode
+            battleRoyale.safe_zone_radius = 450
+            battleRoyale.center_x = 400
+            battleRoyale.center_y = 300
+            debugConsole.addMessage("[PartyMode] Game started - reset safe zone to full size")
+            
+            -- Reset all player elimination states when game starts
+            if _G and _G.players then
+                for id, player in pairs(_G.players) do
+                    player.battleEliminated = false
+                end
+            end
+            if _G and _G.localPlayer then
+                _G.localPlayer.battleEliminated = false
+            end
+        end
+        
         return
     end
 
@@ -275,23 +315,25 @@ function battleRoyale.update(dt)
         battleRoyale.game_over = true
         
         -- Mark player as eliminated if they're still alive when timer runs out
-        if not battleRoyale.player_dropped and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+        if not battleRoyale.player_dropped and _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
             _G.players[_G.localPlayer.id].battleEliminated = true
         end
         -- Also mark local player as eliminated
-        if not battleRoyale.player_dropped and _G.localPlayer then
+        if not battleRoyale.player_dropped and _G and _G.localPlayer then
             _G.localPlayer.battleEliminated = true
         end
         
-        if _G.returnState then
-            _G.gameState = _G.returnState
+        -- In party mode, trigger next game transition
+        if _G and _G.partyMode == true then
+            debugConsole.addMessage("[PartyMode] Timer expired in battle royale, triggering next game")
+            _G.partyModeTransition = true
         end
         return
     end
     
     -- Check if all players are eliminated (for multiplayer) or timer runs out (for single player)
     local allEliminated = true
-    if _G.players then
+    if _G and _G.players then
         for id, player in pairs(_G.players) do
             if not player.battleEliminated then
                 allEliminated = false
@@ -305,9 +347,13 @@ function battleRoyale.update(dt)
     
     if allEliminated then
         battleRoyale.game_over = true
-        if _G.returnState then
-            _G.gameState = _G.returnState
+        
+        -- In party mode, trigger next game transition
+        if _G and _G.partyMode == true then
+            debugConsole.addMessage("[PartyMode] All players eliminated in battle royale, triggering next game")
+            _G.partyModeTransition = true
         end
+        
         return
     end
 
@@ -318,6 +364,8 @@ function battleRoyale.update(dt)
         battleRoyale.safe_zone_target_y = target.y
         debugConsole.addMessage("[SafeZone] New target: " .. battleRoyale.safe_zone_target_x .. "," .. battleRoyale.safe_zone_target_y)
     end
+    
+    -- Party mode uses same safe zone logic as standalone (no music handler dependency)
     
     -- Move safe zone towards target
     local dx = battleRoyale.safe_zone_target_x - battleRoyale.center_x
@@ -387,6 +435,12 @@ function battleRoyale.update(dt)
             (battleRoyale.player.x + battleRoyale.player.width/2 - center_x)^2 +
             (battleRoyale.player.y + battleRoyale.player.height/2 - center_y)^2
         )
+        
+        -- Debug output for party mode
+        if _G.partyMode == true then
+            debugConsole.addMessage(string.format("[PartyMode] Player at (%.1f,%.1f), center at (%.1f,%.1f), radius=%.1f, distance=%.1f", 
+                battleRoyale.player.x, battleRoyale.player.y, center_x, center_y, radius, distance_from_center))
+        end
         
         if distance_from_center > radius and not battleRoyale.player.is_invincible and not battleRoyale.player_dropped then
             battleRoyale.player_dropped = true
@@ -791,8 +845,6 @@ function battleRoyale.drawUI(playersTable, localPlayerId)
     
     love.graphics.setColor(1, 1, 1)
     love.graphics.print('Time Left: ' .. string.format("%.1f", math.max(0, timer_value)), 10, battleRoyale.screen_height - 40)
-    
-    love.graphics.print('Press SPACEBAR to activate/use power-ups', 10, battleRoyale.screen_height - 20)
     
     -- Show active power-up status more prominently
     if battleRoyale.player.laser_active then
@@ -1470,13 +1522,13 @@ function battleRoyale.checkAsteroidCollisions()
                 debugConsole.addMessage("[BattleRoyale] Player hit by asteroid!")
                 
                 -- Mark player as eliminated in players table
-                if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+                if _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
                     _G.players[_G.localPlayer.id].battleEliminated = true
                 end
                 -- Also mark local player as eliminated
-                if _G.localPlayer then
+                if _G and _G.localPlayer then
                     _G.localPlayer.battleEliminated = true
-                    debugConsole.addMessage("[BattleRoyale] Local player ELIMINATED by laser!")
+                    debugConsole.addMessage("[BattleRoyale] Local player ELIMINATED by asteroid!")
                 end
             else
                 debugConsole.addMessage("[BattleRoyale] Asteroid blocked by shield!")
@@ -1486,10 +1538,10 @@ function battleRoyale.checkAsteroidCollisions()
 end
 
 function battleRoyale.checkLaserCollisions()
-    if not _G.players then return end
+    if not _G or not _G.players then return end
     
     for id, player in pairs(_G.players) do
-        if player.battleLasers and player.battleLasers ~= "" and id ~= _G.localPlayer.id then
+        if player.battleLasers and player.battleLasers ~= "" and _G.localPlayer and id ~= _G.localPlayer.id then
             -- Parse laser data
             local laserStrings = {}
             for laserStr in player.battleLasers:gmatch("([^|]+)") do
@@ -1517,11 +1569,11 @@ function battleRoyale.checkLaserCollisions()
                                 debugConsole.addMessage("[BattleRoyale] Player hit by laser from player " .. id .. "!")
                                 
                                 -- Mark player as eliminated in players table
-                                if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+                                if _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
                                     _G.players[_G.localPlayer.id].battleEliminated = true
                                 end
                                 -- Also mark local player as eliminated
-                                if _G.localPlayer then
+                                if _G and _G.localPlayer then
                                     _G.localPlayer.battleEliminated = true
                                 end
                             else
@@ -1545,7 +1597,7 @@ end
 
 function battleRoyale.sendGameStateSync()
     -- Only send sync from host
-    if _G.returnState == "hosting" and _G.serverClients then
+    if _G and _G.returnState == "hosting" and _G.serverClients then
         local message = string.format("battle_sync,%.2f,%.2f,%.2f,%.2f", 
             battleRoyale.gameTime, 
             battleRoyale.center_x, 
@@ -1553,7 +1605,9 @@ function battleRoyale.sendGameStateSync()
             battleRoyale.safe_zone_radius)
         
         for _, client in ipairs(_G.serverClients) do
-            _G.safeSend(client, message)
+            if _G.safeSend then
+                _G.safeSend(client, message)
+            end
         end
     end
 end
