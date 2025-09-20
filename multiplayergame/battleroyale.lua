@@ -226,7 +226,7 @@ function battleRoyale.update(dt)
         return
     end
 
-    -- Update safe zone movement (only on host)
+    -- Update safe zone movement - ONLY on host
     if _G.returnState == "hosting" then
         battleRoyale.safe_zone_move_timer = battleRoyale.safe_zone_move_timer + dt
         -- Change direction more frequently and randomly (1-3 seconds)
@@ -252,12 +252,13 @@ function battleRoyale.update(dt)
         end
     end
 
-    -- Update shrinking safe zone - continuous shrinking immediately when game starts (only on host)
+    -- Update shrinking safe zone - continuous shrinking immediately when game starts - ONLY on host
     if _G.returnState == "hosting" then
         if true then -- Shrinking always happens now
             -- Start shrinking immediately when game starts
             if battleRoyale.shrink_start_time == 0 and battleRoyale.game_started then
                 battleRoyale.shrink_start_time = love.timer.getTime()
+                debugConsole.addMessage("[BattleRoyale] Safe zone shrinking started!")
             end
             
             -- Start shrinking immediately after game starts
@@ -345,26 +346,54 @@ function battleRoyale.update(dt)
         end
     end
 
-    -- Handle powerup collisions (circular collision)
-    for i = #battleRoyale.powerUps, 1, -1 do
-        local powerUp = battleRoyale.powerUps[i]
-        local powerUp_center_x = powerUp.x + powerUp.width/2
-        local powerUp_center_y = powerUp.y + powerUp.height/2
-        local powerUp_radius = powerUp.width/2
-        
-        local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
-        local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
-        local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
-        
-        -- Calculate distance between centers
-        local dx = powerUp_center_x - player_center_x
-        local dy = powerUp_center_y - player_center_y
-        local distance = math.sqrt(dx*dx + dy*dy)
-        
-        -- Check if circles overlap
-        if distance < (powerUp_radius + player_radius) then
-            if battleRoyale.collectPowerUp(powerUp) then
-                table.remove(battleRoyale.powerUps, i)
+    -- Handle powerup collisions (circular collision) - only on host or single player
+    if not _G.returnState or _G.returnState == "hosting" then
+        for i = #battleRoyale.powerUps, 1, -1 do
+            local powerUp = battleRoyale.powerUps[i]
+            local powerUp_center_x = powerUp.x + powerUp.width/2
+            local powerUp_center_y = powerUp.y + powerUp.height/2
+            local powerUp_radius = powerUp.width/2
+            
+            local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
+            local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
+            local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
+            
+            -- Calculate distance between centers
+            local dx = powerUp_center_x - player_center_x
+            local dy = powerUp_center_y - player_center_y
+            local distance = math.sqrt(dx*dx + dy*dy)
+            
+            -- Check if circles overlap
+            if distance < (powerUp_radius + player_radius) then
+                if battleRoyale.collectPowerUp(powerUp) then
+                    table.remove(battleRoyale.powerUps, i)
+                end
+            end
+        end
+    else
+        -- For clients, check collisions with synchronized powerups
+        for i = #battleRoyale.powerUps, 1, -1 do
+            local powerUp = battleRoyale.powerUps[i]
+            local powerUp_center_x = powerUp.x + powerUp.width/2
+            local powerUp_center_y = powerUp.y + powerUp.height/2
+            local powerUp_radius = powerUp.width/2
+            
+            local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
+            local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
+            local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
+            
+            -- Calculate distance between centers
+            local dx = powerUp_center_x - player_center_x
+            local dy = powerUp_center_y - player_center_y
+            local distance = math.sqrt(dx*dx + dy*dy)
+            
+            -- Check if circles overlap
+            if distance < (powerUp_radius + player_radius) then
+                -- Send powerup collection to host
+                if _G.server then
+                    _G.safeSend(_G.server, string.format("powerup_collected,%d,%.2f,%.2f,%s", 
+                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type))
+                end
             end
         end
     end
@@ -413,8 +442,10 @@ function battleRoyale.update(dt)
         end
     end
 
-    -- Update asteroids
-    battleRoyale.updateAsteroids(dt)
+    -- Update asteroids - ONLY on host
+    if _G.returnState == "hosting" then
+        battleRoyale.updateAsteroids(dt)
+    end
     
     -- Check asteroid collisions with player
     battleRoyale.checkAsteroidCollisions()
@@ -422,8 +453,10 @@ function battleRoyale.update(dt)
     -- Check laser collisions with player
     battleRoyale.checkLaserCollisions()
     
-    -- Update power-ups (spawn new ones and remove old ones)
-    battleRoyale.updatePowerUps(dt)
+    -- Update power-ups (spawn new ones and remove old ones) - ONLY on host
+    if _G.returnState == "hosting" then
+        battleRoyale.updatePowerUps(dt)
+    end
     
     -- Update starfield
     battleRoyale.updateStars(dt)
@@ -631,18 +664,9 @@ function battleRoyale.drawSafeZone(playersTable)
             rotation = rotation + time * 0.5 -- Continuous slow rotation
         end
         
-        -- Draw safe zone circle with dynamic color based on shrinking status
+        -- Draw safe zone circle - always blue
         local alpha = 0.2
-        local r, g, b = 0.3, 0.6, 1.0 -- Blue
-        
-        if battleRoyale.shrink_start_time > 0 and battleRoyale.game_started then
-            local elapsed_shrink_time = love.timer.getTime() - battleRoyale.shrink_start_time
-            if elapsed_shrink_time <= battleRoyale.shrink_duration then
-                -- More intense color when shrinking
-                r, g, b = 1.0, 0.4, 0.2 -- Orange-red when shrinking
-                alpha = 0.3
-            end
-        end
+        local r, g, b = 0.3, 0.6, 1.0 -- Always blue
         
         love.graphics.setColor(r, g, b, alpha)
         love.graphics.circle('fill', center_x, center_y, radius)
@@ -652,17 +676,8 @@ function battleRoyale.drawSafeZone(playersTable)
         love.graphics.translate(center_x, center_y)
         love.graphics.rotate(rotation)
         
-        -- Determine border color based on shrinking status (blue theme)
-        if battleRoyale.shrink_start_time == 0 or not battleRoyale.game_started then
-            love.graphics.setColor(0.4, 0.7, 1.0, 0.6) -- Blue when not started yet
-        else
-            local elapsed_shrink_time = love.timer.getTime() - battleRoyale.shrink_start_time
-            if elapsed_shrink_time <= battleRoyale.shrink_duration then
-                love.graphics.setColor(1.0, 0.6, 0.4, 0.7) -- Orange when shrinking
-            else
-                love.graphics.setColor(1.0, 0.3, 0.3, 0.8) -- Red when fully closed
-            end
-        end
+        -- Always use blue border
+        love.graphics.setColor(0.4, 0.7, 1.0, 0.6) -- Always blue
             love.graphics.circle('line', 0, 0, radius)
         
         love.graphics.pop()
@@ -1110,6 +1125,7 @@ function battleRoyale.updatePowerUps(dt)
     if battleRoyale.powerup_spawn_timer >= battleRoyale.powerup_spawn_interval then
         -- Spawn 2-3 power-ups at once
         local num_powerups = math.random(2, 3)
+        debugConsole.addMessage("[BattleRoyale] Spawning " .. num_powerups .. " powerups")
         for i = 1, num_powerups do
             battleRoyale.spawnPowerUp()
         end
@@ -1211,10 +1227,12 @@ function battleRoyale.updateAsteroids(dt)
         
         -- More asteroids at the beginning (0-10 seconds)
         if game_time_elapsed <= 10 then
+            debugConsole.addMessage("[BattleRoyale] Spawning 2 asteroids")
             battleRoyale.spawnAsteroid()
             battleRoyale.spawnAsteroid() -- Spawn 2 asteroids
         -- Fewer asteroids later (10+ seconds)
         else
+            debugConsole.addMessage("[BattleRoyale] Spawning 1 asteroid")
             battleRoyale.spawnAsteroid() -- Spawn 1 asteroid
         end
         

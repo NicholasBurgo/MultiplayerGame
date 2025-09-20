@@ -18,6 +18,7 @@ local returnState = "playing"
 local afterCustomization = nil
 local connectionAttempted = false
 local statusMessages = {}
+local postGameSceneDuration = 3
 local host
 local server
 local peerToId = {}
@@ -80,6 +81,19 @@ local serverClients = {}
 -- Networking variables
 local updateRate = 1/20  -- 20 updates per second
 local updateTimer = 0
+
+-- Game state synchronization
+local gameStateSync = {
+    powerUps = {},
+    meteoroids = {},
+    safeZone = {center_x = 400, center_y = 300, radius = 450},
+    gameTime = 0,
+    lastSyncTime = 0
+}
+
+-- Simple test timer
+local testSyncTimer = 0
+local debugTestTimer = 0
 
 -- Physics variables
 local fixedTimestep = 1/60  -- 60 physics updates per second
@@ -302,6 +316,111 @@ function safeSend(peer, message)
     else
         debugConsole.addMessage("Warning: Attempted to send to invalid peer")
     end
+end
+
+-- Game state synchronization functions
+function syncGameState()
+    debugConsole.addMessage("[Sync] syncGameState called - gameState: " .. gameState .. ", returnState: " .. tostring(returnState) .. ", clients: " .. #serverClients)
+    
+    if gameState == "battleroyale" and returnState == "hosting" then
+        -- Host sends complete game state to all clients
+        local powerUpData = serializePowerUps(battleRoyale.powerUps)
+        local meteoroidData = serializeMeteoroids(battleRoyale.asteroids)
+        local safeZoneData = string.format("%.2f,%.2f,%.2f", 
+            battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
+        
+        -- Simplified message for testing
+        local message = string.format("game_state_sync,test_powerups,test_meteoroids,%.2f,%.2f,%.2f,%.2f", 
+            battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius, battleRoyale.timer)
+        
+        debugConsole.addMessage("[Sync] Message length: " .. #message)
+        debugConsole.addMessage("[Sync] PowerUps: " .. #battleRoyale.powerUps .. ", Asteroids: " .. #battleRoyale.asteroids)
+        
+        for _, client in ipairs(serverClients) do
+            safeSend(client, message)
+            debugConsole.addMessage("[Host] Sent sync to client")
+        end
+        
+        -- Update local sync state
+        gameStateSync.powerUps = battleRoyale.powerUps
+        gameStateSync.meteoroids = battleRoyale.asteroids
+        gameStateSync.safeZone = {
+            center_x = battleRoyale.center_x,
+            center_y = battleRoyale.center_y,
+            radius = battleRoyale.safe_zone_radius
+        }
+        gameStateSync.gameTime = battleRoyale.timer
+        gameStateSync.lastSyncTime = love.timer.getTime()
+        
+        debugConsole.addMessage("[Sync] Sent game state to " .. #serverClients .. " clients")
+    else
+        debugConsole.addMessage("[Sync] Not syncing - conditions not met")
+    end
+end
+
+function serializePowerUps(powerUps)
+    local powerUpStrings = {}
+    for i, powerUp in ipairs(powerUps) do
+        table.insert(powerUpStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%d",
+            powerUp.x, powerUp.y, powerUp.vx or 0, powerUp.vy or 0, 
+            powerUp.width, powerUp.height, powerUp.type, powerUp.is_moving and 1 or 0))
+    end
+    return table.concat(powerUpStrings, "|")
+end
+
+function serializeMeteoroids(meteoroids)
+    local meteoroidStrings = {}
+    for i, meteoroid in ipairs(meteoroids) do
+        table.insert(meteoroidStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f",
+            meteoroid.x, meteoroid.y, meteoroid.vx, meteoroid.vy, meteoroid.size))
+    end
+    return table.concat(meteoroidStrings, "|")
+end
+
+function deserializePowerUps(data)
+    local powerUps = {}
+    if data and data ~= "" then
+        for powerUpStr in data:gmatch("([^|]+)") do
+            local x, y, vx, vy, width, height, type, is_moving = powerUpStr:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([^,]+),([%d.]+)")
+            if x and y and vx and vy and width and height and type and is_moving then
+                table.insert(powerUps, {
+                    x = tonumber(x),
+                    y = tonumber(y),
+                    vx = tonumber(vx),
+                    vy = tonumber(vy),
+                    width = tonumber(width),
+                    height = tonumber(height),
+                    type = type,
+                    is_moving = tonumber(is_moving) == 1
+                })
+            end
+        end
+    end
+    return powerUps
+end
+
+function deserializeMeteoroids(data)
+    local meteoroids = {}
+    if data and data ~= "" then
+        for meteoroidStr in data:gmatch("([^|]+)") do
+            local x, y, vx, vy, size = meteoroidStr:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+)")
+            if x and y and vx and vy and size then
+                local meteoroid = {
+                    x = tonumber(x),
+                    y = tonumber(y),
+                    vx = tonumber(vx),
+                    vy = tonumber(vy),
+                    size = tonumber(size),
+                    color = {0.5, 0.5, 0.5},
+                    points = {}
+                }
+                -- Generate shape for the meteoroid
+                battleRoyale.generateAsteroidShape(meteoroid)
+                table.insert(meteoroids, meteoroid)
+            end
+        end
+    end
+    return meteoroids
 end
 
 function love.load() -- music effect
@@ -578,8 +697,20 @@ function love.update(dt)
             gameState = returnState
         end
     elseif gameState == "battleroyale" then
-        debugConsole.addMessage("[Update] In battle royale update")
+        -- Debug test - show message every 3 seconds
+        debugTestTimer = debugTestTimer + dt
+        if debugTestTimer >= 3.0 then
+            debugTestTimer = 0
+            debugConsole.addMessage("[TEST] Battle royale running - returnState: " .. tostring(returnState))
+        end
+        
+        -- Simple sync test - send test message every second
         if returnState == "hosting" then
+            testSyncTimer = testSyncTimer + dt
+            if testSyncTimer >= 1.0 then
+                testSyncTimer = 0
+                debugConsole.addMessage("[Host] Powerups: " .. #battleRoyale.powerUps .. ", Meteoroids: " .. #battleRoyale.asteroids .. ", Clients: " .. #serverClients)
+            end
             updateServer()
         else
             updateClient()
@@ -717,7 +848,10 @@ function updatePhysics(dt)
 end
 
 function updateServer()
-    if not serverHost then return end
+    if not serverHost then 
+        debugConsole.addMessage("[Server] updateServer called but no serverHost!")
+        return 
+    end
 
     -- sends positions and colors in lobby
     for _, client in ipairs(serverClients) do
@@ -758,19 +892,42 @@ function updateServer()
             laserData = "|" .. table.concat(laserStrings, "|")
         end
         
-        -- Host controls all game elements - no need to sync meteoroids/power-ups from clients
+        -- Send position and laser data like laser game
+        for _, client in ipairs(serverClients) do
+            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
+                battleX, battleY,
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], laserData))
+        end
         
-        -- Include elimination status for host
-        local eliminationStatus = localPlayer.battleEliminated and "1" or "0"
+        -- Send game state data separately (like laser game does)
+        local powerUpData = ""
+        if battleRoyale.powerUps and #battleRoyale.powerUps > 0 then
+            local powerUpStrings = {}
+            for i, powerUp in ipairs(battleRoyale.powerUps) do
+                table.insert(powerUpStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%d",
+                    powerUp.x, powerUp.y, powerUp.vx or 0, powerUp.vy or 0, 
+                    powerUp.width, powerUp.height, powerUp.type, powerUp.is_moving and 1 or 0))
+            end
+            powerUpData = table.concat(powerUpStrings, "|")
+        end
         
-        -- Include safe zone data
+        local meteoroidData = ""
+        if battleRoyale.asteroids and #battleRoyale.asteroids > 0 then
+            local meteoroidStrings = {}
+            for i, meteoroid in ipairs(battleRoyale.asteroids) do
+                table.insert(meteoroidStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f",
+                    meteoroid.x, meteoroid.y, meteoroid.vx, meteoroid.vy, meteoroid.size))
+            end
+            meteoroidData = table.concat(meteoroidStrings, "|")
+        end
+        
         local safeZoneData = string.format("%.2f,%.2f,%.2f", 
             battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
         
+        -- Send game state data to all clients
         for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
-                battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], eliminationStatus, safeZoneData, laserData))
+            safeSend(client, string.format("battle_game_state,%s,%s,%s", 
+                powerUpData, meteoroidData, safeZoneData))
         end
     end
 
@@ -845,7 +1002,10 @@ function updateServer()
 end
 
 function updateClient()
-    if not host then return end
+    if not host then 
+        debugConsole.addMessage("[Client] updateClient called but no host!")
+        return 
+    end
 
     -- Handle network events
     local success, err = pcall(function()
@@ -891,7 +1051,7 @@ function updateClient()
                 localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
         end
 
-        -- battle royale positions
+        -- battle royale positions - send like laser game
         if gameState == "battleroyale" then
             local battleX = battleRoyale.player.x
             local battleY = battleRoyale.player.y
@@ -907,13 +1067,10 @@ function updateClient()
                 laserData = "|" .. table.concat(laserStrings, "|")
             end
             
-            -- Clients only send their position and laser data - host controls everything else
-            local eliminationStatus = localPlayer.battleEliminated and "1" or "0"
-            local safeZoneData = string.format("%.2f,%.2f,%.2f", 
-                battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
-            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
+            -- Send position and laser data like laser game
+            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
                 localPlayer.id, battleX, battleY,
-                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], eliminationStatus, safeZoneData, laserData))
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], laserData))
         end
     end
 end
@@ -1142,6 +1299,7 @@ function love.keypressed(key)
     
     if key == "f3" then  
         debugConsole.toggle()
+        debugConsole.addMessage("[DEBUG] F3 pressed - console toggled!")
     end
 
     if gameState == "connecting" and inputField.active then
@@ -1186,6 +1344,7 @@ function love.keypressed(key)
         
                 gameState = "jumpgame"
                 returnState = "hosting"
+                _G.returnState = "hosting"
                 initializeRoundWins()
                 jumpGame.reset(players)
                 jumpGame.setPlayerColor(localPlayer.color)
@@ -1228,6 +1387,7 @@ function love.keypressed(key)
                 print("[Main] Switching to battle royale mode!")
                 gameState = "battleroyale"
                 returnState = "hosting"
+                _G.returnState = "hosting"
                 initializeRoundWins()
                 battleRoyale.reset()
                 battleRoyale.setPlayerColor(localPlayer.color)
@@ -1635,6 +1795,40 @@ function handleServerMessage(id, data)
         return
     end
 
+    -- Handle powerup collection from clients
+    if data:match("^powerup_collected,") then
+        local playerId, x, y, type = data:match("^powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+)")
+        if playerId and x and y and type then
+            playerId = tonumber(playerId)
+            x, y = tonumber(x), tonumber(y)
+            
+            -- Find and remove the powerup from host's game state
+            for i = #battleRoyale.powerUps, 1, -1 do
+                local powerUp = battleRoyale.powerUps[i]
+                if math.abs(powerUp.x - x) < 5 and math.abs(powerUp.y - y) < 5 and powerUp.type == type then
+                    table.remove(battleRoyale.powerUps, i)
+                    debugConsole.addMessage("[Server] Player " .. playerId .. " collected " .. type .. " powerup")
+                    break
+                end
+            end
+            
+            -- Give powerup to the player by simulating collection
+            if players[playerId] then
+                -- Create a temporary powerup object for collection
+                local tempPowerUp = {
+                    x = x,
+                    y = y,
+                    width = 35,
+                    height = 35,
+                    type = type
+                }
+                -- This will be handled by the next sync, but we can log it
+                debugConsole.addMessage("[Server] Powerup " .. type .. " given to player " .. playerId)
+            end
+        end
+        return
+    end
+
     -- Handle round win messages
     if data:match("^round_win,(%d+)") then
         local winnerId = tonumber(data:match("^round_win,(%d+)"))
@@ -1655,6 +1849,17 @@ end
 
 function handleClientMessage(data)
     debugConsole.addMessage("[Client] Received: " .. data)
+    
+    -- Handle simple sync test
+    if data:match("^sync_test,") then
+        debugConsole.addMessage("[Client] RECEIVED SYNC TEST MESSAGE!")
+        return
+    end
+    
+    -- Check if it's a game state sync message
+    if data:match("^game_state_sync,") then
+        debugConsole.addMessage("[Client] DETECTED game_state_sync message!")
+    end
     if data == "start_battleroyale_game" then
         debugConsole.addMessage("[Client] RECEIVED BATTLE ROYALE START MESSAGE!")
     end
@@ -1779,10 +1984,48 @@ function handleClientMessage(data)
         debugConsole.addMessage("[Client] Starting battle royale game")
         gameState = "battleroyale"
         returnState = "playing"
+        _G.returnState = "playing"
         battleRoyale.load()
         battleRoyale.setPlayerColor(localPlayer.color)
         debugConsole.addMessage("[Client] Battle royale game state set to: " .. gameState)
         debugConsole.addMessage("[Client] Battle royale loaded successfully")
+        return
+    end
+
+    -- Handle synchronized game state from host
+    if data:match("^game_state_sync,") then
+        debugConsole.addMessage("[Client] Received game_state_sync message!")
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        debugConsole.addMessage("[Client] Message parts: " .. #parts)
+        for i, part in ipairs(parts) do
+            debugConsole.addMessage("[Client] Part " .. i .. ": " .. part)
+        end
+        
+        if #parts >= 7 then
+            local powerUpData = parts[2]
+            local meteoroidData = parts[3]
+            local center_x = tonumber(parts[4])
+            local center_y = tonumber(parts[5])
+            local radius = tonumber(parts[6])
+            local gameTime = tonumber(parts[7])
+            
+            -- Update safe zone
+            battleRoyale.center_x = center_x
+            battleRoyale.center_y = center_y
+            battleRoyale.safe_zone_radius = radius
+            
+            -- Update game timer
+            battleRoyale.timer = gameTime
+            
+            debugConsole.addMessage("[Client] Updated safe zone: " .. center_x .. "," .. center_y .. "," .. radius)
+            debugConsole.addMessage("[Client] Updated timer: " .. gameTime)
+        else
+            debugConsole.addMessage("[Client] Invalid game_state_sync message format - expected 7 parts, got " .. #parts)
+        end
         return
     end
 
@@ -1838,26 +2081,57 @@ function handleClientMessage(data)
         return
     end
 
-    if data:match("^battle_position,") then
-        -- Parse the message step by step to avoid regex issues
+
+    if data:match("^battle_game_state,") then
+        -- Handle game state data from host
         local parts = {}
         for part in data:gmatch("([^,]+)") do
             table.insert(parts, part)
         end
         
-        if #parts >= 8 then
+        if #parts >= 4 then
+            local powerUpData = parts[2]
+            local meteoroidData = parts[3]
+            local safeZoneData = parts[4]
+            
+            -- Update safe zone
+            local sx, sy, sr = safeZoneData:match("([-%d.]+),([-%d.]+),([-%d.]+)")
+            if sx and sy and sr then
+                battleRoyale.center_x = tonumber(sx)
+                battleRoyale.center_y = tonumber(sy)
+                battleRoyale.safe_zone_radius = tonumber(sr)
+            end
+            
+            -- Update powerups
+            battleRoyale.powerUps = {}
+            if powerUpData and powerUpData ~= "" then
+                battleRoyale.powerUps = deserializePowerUps(powerUpData)
+            end
+            
+            -- Update meteoroids
+            battleRoyale.asteroids = {}
+            if meteoroidData and meteoroidData ~= "" then
+                battleRoyale.asteroids = deserializeMeteoroids(meteoroidData)
+            end
+        end
+        return
+    end
+
+    if data:match("^battle_position,") then
+        -- Parse the message using comma delimiter like laser game
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        if #parts >= 7 then
             local id = tonumber(parts[2])
             local x = tonumber(parts[3])
             local y = tonumber(parts[4])
             local r = tonumber(parts[5])
             local g = tonumber(parts[6])
             local b = tonumber(parts[7])
-            local eliminationStatus = parts[8]
-            local safeZoneData = parts[9]
-            local laserData = ""
-            if #parts > 9 then
-                laserData = parts[10]
-            end
+            local laserData = parts[8] or ""
             
             if id and id ~= localPlayer.id then
                 if not players[id] then
@@ -1867,12 +2141,7 @@ function handleClientMessage(data)
                 players[id].battleX = x
                 players[id].battleY = y
                 players[id].color = {r, g, b}
-                players[id].battleEliminated = (eliminationStatus == "1")
                 players[id].battleLasers = laserData
-                players[id].battleSafeZone = safeZoneData
-                
-                -- Debug: Show what we received
-                debugConsole.addMessage("[Client] Player " .. id .. " elimination: " .. eliminationStatus .. " -> " .. tostring(players[id].battleEliminated))
             end
         end
         return
