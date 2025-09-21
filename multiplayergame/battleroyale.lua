@@ -16,9 +16,7 @@ battleRoyale.seed = 0
 battleRoyale.random = love.math.newRandomGenerator()
 battleRoyale.gameTime = 0
 battleRoyale.nextMeteoroidTime = 0
-battleRoyale.nextPowerUpTime = 0
 battleRoyale.meteoroidSpawnPoints = {}
-battleRoyale.powerUpSpawnPoints = {}
 battleRoyale.safeZoneTargets = {}
 
 -- Game settings 
@@ -41,7 +39,7 @@ battleRoyale.death_timer = 0
 battleRoyale.death_shake = 0
 battleRoyale.player_dropped = false
 battleRoyale.death_animation_done = false
-battleRoyale.shrink_duration = 30 -- 30 seconds of shrinking (more aggressive)
+battleRoyale.shrink_duration = 20 -- 20 seconds of shrinking (faster)
 battleRoyale.shrink_start_time = 0 -- When shrinking actually starts
 battleRoyale.safe_zone_move_speed = 60 -- pixels per second (faster movement)
 battleRoyale.safe_zone_move_timer = 0
@@ -49,6 +47,11 @@ battleRoyale.safe_zone_target_x = 400
 battleRoyale.safe_zone_target_y = 300
 battleRoyale.sync_timer = 0
 battleRoyale.sync_interval = 1.0 -- Send sync every 1 second
+battleRoyale.respawn_timer = 0 -- Timer for respawn mechanism
+battleRoyale.respawn_delay = 3 -- 3 seconds before respawn
+battleRoyale.grow_timer = 0 -- Timer for random growth periods
+battleRoyale.grow_duration = 0 -- Current growth duration (0 = not growing)
+battleRoyale.is_growing = false -- Whether currently in growth phase
 
 -- Player settings
 battleRoyale.player = {
@@ -59,39 +62,19 @@ battleRoyale.player = {
     speed = 250,
     normal_speed = 250,
     points = 0,
-    powerUpsCollected = {},
-    max_powerUps = 2,
-    active_effects = {},
     is_invincible = false,
-    invincibility_timer = 0,
-    speed_up_active = false,
-    speed_up_timer = 0,
-    shield_active = false,
-    shield_timer = 0,
-    laser_active = false,
-    laser_timer = 0,
-    laser_charges = 0,
-    laser_angle = 0,
-    last_movement_angle = 0,
-    teleport_charges = 0
+    invincibility_timer = 0
 }
 
-local sounds = {
-    powerup = love.audio.newSource("sounds/laser.mp3", "static"),
-    laser = love.audio.newSource("sounds/laser.mp3", "static")
-}
+-- Sounds removed - no power-ups in this version
 
 -- Game objects
-battleRoyale.powerUps = {}
 battleRoyale.keysPressed = {}
 battleRoyale.safe_zone_alpha = 0.3
-battleRoyale.lasers = {}
 battleRoyale.asteroids = {}
 battleRoyale.asteroid_spawn_timer = 0
-battleRoyale.asteroid_spawn_interval = 2.0 -- More reasonable spawning
+battleRoyale.asteroid_spawn_interval = 1.0 -- More frequent asteroid spawning
 battleRoyale.asteroid_speed = 600 -- Pixels per second (much faster)
-battleRoyale.powerup_spawn_timer = 0
-battleRoyale.powerup_spawn_interval = 2.0 -- Spawn power-ups every 2 seconds (but multiple at once)
 battleRoyale.stars = {} -- Moving starfield background
 battleRoyale.star_direction = 0 -- Global direction for all stars
 
@@ -148,21 +131,15 @@ function battleRoyale.load()
         speed = 250,
         normal_speed = 250,
         points = 0,
-        powerUpsCollected = {},
-        max_powerUps = 2,
         is_invincible = false,
-        invincibility_timer = 0,
-        speed_up_active = false,
-        speed_up_timer = 0,
-        shield_active = false,
-        shield_timer = 0,
-        laser_active = false,
-        laser_timer = 0,
-        laser_charges = 0,
-        laser_angle = 0,
-        last_movement_angle = 0,
-        teleport_charges = 0
+        invincibility_timer = 0
     }
+    
+    -- Reset respawn timer and growth timers
+    battleRoyale.respawn_timer = 0
+    battleRoyale.grow_timer = 0
+    battleRoyale.grow_duration = 0
+    battleRoyale.is_growing = false
     
     -- In party mode, ensure player starts in center of safe zone
     debugConsole.addMessage("[BattleRoyale] Checking party mode: " .. tostring(_G and _G.partyMode or "nil") .. " (type: " .. type(_G and _G.partyMode) .. ")")
@@ -179,8 +156,7 @@ function battleRoyale.load()
         debugConsole.addMessage("[BattleRoyale] Party mode not detected, using normal initialization")
     end
     
-    -- Initialize spacebar flag
-    battleRoyale.spacebarPressed = false
+    -- No spacebar functionality needed without power-ups
 
     -- Reset safe zone to center
     battleRoyale.center_x = 400
@@ -192,10 +168,8 @@ function battleRoyale.load()
     
     -- Create game elements
     battleRoyale.createStars()
-    battleRoyale.createPowerUps()
     battleRoyale.asteroids = {}
     battleRoyale.asteroid_spawn_timer = 0
-    battleRoyale.powerup_spawn_timer = 0
 
     debugConsole.addMessage("[BattleRoyale] Game loaded")
 end
@@ -205,9 +179,7 @@ function battleRoyale.setSeed(seed)
     battleRoyale.random:setSeed(seed)
     battleRoyale.gameTime = 0
     battleRoyale.nextMeteoroidTime = 0
-    battleRoyale.nextPowerUpTime = 0
     battleRoyale.meteoroidSpawnPoints = {}
-    battleRoyale.powerUpSpawnPoints = {}
     battleRoyale.safeZoneTargets = {}
     
     -- Pre-calculate meteoroid spawn points (like laser game)
@@ -221,24 +193,11 @@ function battleRoyale.setSeed(seed)
         }
         table.insert(battleRoyale.meteoroidSpawnPoints, spawnInfo)
         
-        -- Spawn meteoroids every 1-3 seconds
-        time = time + battleRoyale.random:random(1.0, 3.0)
+        -- Spawn meteoroids more frequently (every 0.5-1.5 seconds)
+        time = time + battleRoyale.random:random(0.5, 1.5)
     end
     
-    -- Pre-calculate power-up spawn points
-    time = 0
-    while time < battleRoyale.timer do
-        local spawnInfo = {
-            time = time,
-            side = battleRoyale.random:random(1, 4),
-            speed = battleRoyale.random:random(150, 250),
-            type = battleRoyale.getRandomPowerUpType(time)
-        }
-        table.insert(battleRoyale.powerUpSpawnPoints, spawnInfo)
-        
-        -- Spawn power-ups every 2-4 seconds
-        time = time + battleRoyale.random:random(2.0, 4.0)
-    end
+    -- No power-ups in this version
     
     -- Pre-calculate safe zone target positions
     time = 0
@@ -256,24 +215,14 @@ function battleRoyale.setSeed(seed)
     end
     
     debugConsole.addMessage(string.format(
-        "[BattleRoyale] Generated %d meteoroid, %d power-up, and %d safe zone targets with seed %d",
+        "[BattleRoyale] Generated %d meteoroid and %d safe zone targets with seed %d",
         #battleRoyale.meteoroidSpawnPoints,
-        #battleRoyale.powerUpSpawnPoints,
         #battleRoyale.safeZoneTargets,
         seed
     ))
 end
 
-function battleRoyale.getRandomPowerUpType(timeRemaining)
-    local powerUpTypes = {'speed', 'shield', 'laser', 'teleport'}
-    
-    -- Remove teleport from available types during final 13 seconds
-    if timeRemaining <= 13 then
-        powerUpTypes = {'speed', 'shield', 'laser'} -- No teleport in final 13 seconds
-    end
-    
-    return powerUpTypes[battleRoyale.random:random(1, #powerUpTypes)]
-end
+-- Power-ups removed from this version
 
 function battleRoyale.update(dt)
     -- Update music effects
@@ -291,15 +240,7 @@ function battleRoyale.update(dt)
             battleRoyale.center_y = 300
             debugConsole.addMessage("[PartyMode] Game started - reset safe zone to full size")
             
-            -- Reset all player elimination states when game starts
-            if _G and _G.players then
-                for id, player in pairs(_G.players) do
-                    player.battleEliminated = false
-                end
-            end
-            if _G and _G.localPlayer then
-                _G.localPlayer.battleEliminated = false
-            end
+            -- No elimination system - players respawn instead of being eliminated
         end
         
         return
@@ -314,48 +255,13 @@ function battleRoyale.update(dt)
         battleRoyale.timer = 0
         battleRoyale.game_over = true
         
-        -- Mark player as eliminated if they're still alive when timer runs out
-        if not battleRoyale.player_dropped and _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
-            _G.players[_G.localPlayer.id].battleEliminated = true
-        end
-        -- Also mark local player as eliminated
-        if not battleRoyale.player_dropped and _G and _G.localPlayer then
-            _G.localPlayer.battleEliminated = true
-        end
+        -- No elimination system - players just continue until timer runs out
         
-        -- In party mode, trigger next game transition
-        if _G and _G.partyMode == true then
-            debugConsole.addMessage("[PartyMode] Timer expired in battle royale, triggering next game")
-            _G.partyModeTransition = true
-        end
+        -- Party mode transition is handled by main.lua
         return
     end
     
-    -- Check if all players are eliminated (for multiplayer) or timer runs out (for single player)
-    local allEliminated = true
-    if _G and _G.players then
-        for id, player in pairs(_G.players) do
-            if not player.battleEliminated then
-                allEliminated = false
-                break
-            end
-        end
-    else
-        -- Single player mode - only end when timer runs out, not when player dies
-        allEliminated = false
-    end
-    
-    if allEliminated then
-        battleRoyale.game_over = true
-        
-        -- In party mode, trigger next game transition
-        if _G and _G.partyMode == true then
-            debugConsole.addMessage("[PartyMode] All players eliminated in battle royale, triggering next game")
-            _G.partyModeTransition = true
-        end
-        
-        return
-    end
+    -- No elimination system - game only ends when timer runs out
 
     -- Update safe zone movement using pre-calculated targets
     if #battleRoyale.safeZoneTargets > 0 and battleRoyale.safeZoneTargets[1].time <= battleRoyale.gameTime then
@@ -378,7 +284,7 @@ function battleRoyale.update(dt)
         battleRoyale.center_y = battleRoyale.center_y + move_y
     end
 
-    -- Update shrinking safe zone - continuous shrinking immediately when game starts (deterministic)
+    -- Update shrinking safe zone with random growth periods (deterministic)
     if true then -- Shrinking always happens now
         -- Start shrinking immediately when game starts
         if battleRoyale.shrink_start_time == 0 and battleRoyale.game_started then
@@ -390,15 +296,84 @@ function battleRoyale.update(dt)
         if battleRoyale.shrink_start_time > 0 then
             local elapsed_shrink_time = battleRoyale.gameTime - battleRoyale.shrink_start_time
             
-            -- Only shrink if we haven't exceeded the shrink duration
-            if elapsed_shrink_time <= battleRoyale.shrink_duration then
-                -- Calculate shrink rate: 450 pixels over 30 seconds = 15 pixels per second
-                local shrink_rate = 450 / battleRoyale.shrink_duration
+            -- Check for random growth periods (increases over time) - deterministic
+            if not battleRoyale.is_growing and battleRoyale.grow_timer <= 0 and elapsed_shrink_time > 2 then
+                -- Growth chance increases over time: 25% early game, 40% mid game, 60% late game (higher for testing)
+                local growth_chance = 0.25
+                if elapsed_shrink_time > 8 then
+                    growth_chance = 0.40 -- Mid game
+                end
+                if elapsed_shrink_time > 12 then
+                    growth_chance = 0.60 -- Late game
+                end
+                
+                -- Use deterministic random based on game time for synchronization
+                local time_seed = math.floor(battleRoyale.gameTime * 10) -- Check every 0.1 seconds
+                battleRoyale.random:setSeed(battleRoyale.seed + time_seed)
+                local random_value = battleRoyale.random:random(0, 100)
+                local threshold = growth_chance * 100
+                
+                
+                if random_value < threshold then
+                    battleRoyale.is_growing = true
+                    -- Growth duration increases over time: 2-3 early, 3-5 mid, 4-6 late
+                    local min_growth = 2
+                    local max_growth = 3
+                    if elapsed_shrink_time > 8 then
+                        min_growth = 3
+                        max_growth = 5
+                    end
+                    if elapsed_shrink_time > 12 then
+                        min_growth = 4
+                        max_growth = 6
+                    end
+                    
+                    battleRoyale.grow_duration = battleRoyale.random:random(min_growth, max_growth)
+                    battleRoyale.grow_timer = battleRoyale.grow_duration
+                end
+                -- Restore original seed
+                battleRoyale.random:setSeed(battleRoyale.seed)
+            end
+            
+            -- Handle growth period
+            if battleRoyale.is_growing then
+                battleRoyale.grow_timer = battleRoyale.grow_timer - dt
+                if battleRoyale.grow_timer <= 0 then
+                    battleRoyale.is_growing = false
+                    battleRoyale.grow_duration = 0
+                end
+            else
+                -- Reset growth timer for next chance (faster checking in late game)
+                battleRoyale.grow_timer = battleRoyale.grow_timer - dt
+                if battleRoyale.grow_timer <= 0 then
+                    -- Check more frequently as game progresses
+                    if elapsed_shrink_time > 15 then
+                        battleRoyale.grow_timer = 1 -- Check every 1 second in late game
+                    else
+                        battleRoyale.grow_timer = 1.5 -- Check every 1.5 seconds in mid game
+                    end
+                end
+            end
+            
+            -- Only shrink if we haven't exceeded the shrink duration and not currently growing
+            if elapsed_shrink_time <= battleRoyale.shrink_duration and not battleRoyale.is_growing then
+                -- Calculate shrink rate: 350 pixels over 20 seconds = 17.5 pixels per second (from 450 to 100)
+                local shrink_rate = 350 / battleRoyale.shrink_duration
                 battleRoyale.safe_zone_radius = battleRoyale.safe_zone_radius - (dt * shrink_rate)
+            elseif battleRoyale.is_growing then
+                -- Grow during growth periods (larger growth in late game)
+                local grow_rate = 40 -- Base 40 pixels per second growth
+                if elapsed_shrink_time > 10 then
+                    grow_rate = 50 -- 50 pixels per second in mid game
+                end
+                if elapsed_shrink_time > 15 then
+                    grow_rate = 60 -- 60 pixels per second in late game
+                end
+                battleRoyale.safe_zone_radius = battleRoyale.safe_zone_radius + (dt * grow_rate)
             end
         end
     end
-    battleRoyale.safe_zone_radius = math.max(0, battleRoyale.safe_zone_radius) -- Minimum radius of 0 (completely closed)
+    battleRoyale.safe_zone_radius = math.max(100, battleRoyale.safe_zone_radius) -- Minimum radius of 100 (stops at 100)
 
     -- Handle top-down movement (only if not eliminated)
     if not battleRoyale.player_dropped then
@@ -446,100 +421,32 @@ function battleRoyale.update(dt)
             battleRoyale.player_dropped = true
             battleRoyale.death_timer = 2 -- 2 second death animation
             battleRoyale.death_shake = 15 -- Shake intensity
-            debugConsole.addMessage("[BattleRoyale] Player died outside safe zone!")
-            
-            -- Mark player as eliminated in players table
-            if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
-                _G.players[_G.localPlayer.id].battleEliminated = true
-            end
-            -- Also mark local player as eliminated
-            if _G.localPlayer then
-                _G.localPlayer.battleEliminated = true
-            end
+            battleRoyale.respawn_timer = battleRoyale.respawn_delay -- Start respawn timer
+            debugConsole.addMessage("[BattleRoyale] Player died outside safe zone! Respawning in " .. battleRoyale.respawn_delay .. " seconds...")
         end
     end
 
-    -- Handle powerup collisions (circular collision) - only on local player
-    for i = #battleRoyale.powerUps, 1, -1 do
-        local powerUp = battleRoyale.powerUps[i]
-        local powerUp_center_x = powerUp.x + powerUp.width/2
-        local powerUp_center_y = powerUp.y + powerUp.height/2
-        local powerUp_radius = powerUp.width/2
-        
-        local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
-        local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
-        local player_radius = math.min(battleRoyale.player.width, battleRoyale.player.height)/2
-        
-        -- Calculate distance between centers
-        local dx = powerUp_center_x - player_center_x
-        local dy = powerUp_center_y - player_center_y
-        local distance = math.sqrt(dx*dx + dy*dy)
-        
-        -- Check if circles overlap
-        if distance < (powerUp_radius + player_radius) then
-            if battleRoyale.collectPowerUp(powerUp) then
-                table.remove(battleRoyale.powerUps, i)
-                
-                -- Send power-up collection to other players
-                if _G.localPlayer and _G.localPlayer.id then
-                    local message = string.format("battle_powerup_collected,%d,%.2f,%.2f,%s,%.2f,%d", 
-                        _G.localPlayer.id, powerUp.x, powerUp.y, powerUp.type, powerUp.spawnTime, powerUp.spawnSide)
-                    
-                    if _G.returnState == "hosting" and _G.serverClients then
-                        for _, client in ipairs(_G.serverClients) do
-                            _G.safeSend(client, message)
-                        end
-                    elseif _G.returnState == "playing" and _G.server then
-                        _G.safeSend(_G.server, message)
-                    end
-                    
-                    debugConsole.addMessage("[BattleRoyale] Player collected " .. powerUp.type .. " power-up")
-                end
-            end
+    -- Handle respawn mechanism
+    if battleRoyale.player_dropped and battleRoyale.respawn_timer > 0 then
+        battleRoyale.respawn_timer = battleRoyale.respawn_timer - dt
+        if battleRoyale.respawn_timer <= 0 then
+            -- Respawn player in center of safe zone
+            battleRoyale.player.x = battleRoyale.center_x - battleRoyale.player.width/2
+            battleRoyale.player.y = battleRoyale.center_y - battleRoyale.player.height/2
+            battleRoyale.player_dropped = false
+            battleRoyale.death_timer = 0
+            battleRoyale.death_shake = 0
+            battleRoyale.player.is_invincible = true
+            battleRoyale.player.invincibility_timer = 2 -- 2 seconds of invincibility after respawn
+            debugConsole.addMessage("[BattleRoyale] Player respawned in center of safe zone!")
         end
     end
 
-    -- Update power-up timers
-    if battleRoyale.player.speed_up_active then
-        battleRoyale.player.speed_up_timer = battleRoyale.player.speed_up_timer - dt
-        if battleRoyale.player.speed_up_timer <= 0 then
-            battleRoyale.player.speed_up_active = false
-            battleRoyale.player.speed = battleRoyale.player.normal_speed
-        end
-    end
-    
+    -- Update invincibility timer
     if battleRoyale.player.is_invincible then
         battleRoyale.player.invincibility_timer = battleRoyale.player.invincibility_timer - dt
         if battleRoyale.player.invincibility_timer <= 0 then
             battleRoyale.player.is_invincible = false
-        end
-    end
-
-    if battleRoyale.player.shield_active then
-        battleRoyale.player.shield_timer = battleRoyale.player.shield_timer - dt
-        if battleRoyale.player.shield_timer <= 0 then
-            battleRoyale.player.shield_active = false
-        end
-    end
-
-    if battleRoyale.player.laser_active and battleRoyale.player.laser_charges <= 0 then
-        battleRoyale.player.laser_active = false
-    end
-
-    -- Update lasers (bullets)
-    for i = #battleRoyale.lasers, 1, -1 do
-        local laser = battleRoyale.lasers[i]
-        laser.time = laser.time + dt
-        
-        -- Move the bullet
-        laser.x = laser.x + laser.vx * dt
-        laser.y = laser.y + laser.vy * dt
-        
-        -- Remove if expired or off screen
-        if laser.time >= laser.duration or 
-           laser.x < -50 or laser.x > battleRoyale.screen_width + 50 or
-           laser.y < -50 or laser.y > battleRoyale.screen_height + 50 then
-            table.remove(battleRoyale.lasers, i)
         end
     end
 
@@ -549,11 +456,6 @@ function battleRoyale.update(dt)
     -- Check asteroid collisions with player
     battleRoyale.checkAsteroidCollisions()
     
-    -- Check laser collisions with player
-    battleRoyale.checkLaserCollisions()
-    
-    -- Update power-ups using deterministic spawning (like laser game)
-    battleRoyale.updatePowerUps(dt)
     
     -- Update starfield
     battleRoyale.updateStars(dt)
@@ -580,6 +482,11 @@ function battleRoyale.update(dt)
     -- Update scoring based on survival time
     battleRoyale.current_round_score = battleRoyale.current_round_score + math.floor(dt * 10)
     
+    -- Store score in players table for round win determination
+    if _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
+        _G.players[_G.localPlayer.id].battleScore = battleRoyale.current_round_score
+    end
+    
     -- Handle spacebar input using isDown (like jump game)
     battleRoyale.handleSpacebar()
 end
@@ -603,21 +510,12 @@ function battleRoyale.draw(playersTable, localPlayerId)
     battleRoyale.drawSafeZone(playersTable)
     
     -- Draw game elements
-    battleRoyale.drawPowerUps()
-    battleRoyale.drawLasers()
-    battleRoyale.drawOtherPlayersLasers(playersTable)
     battleRoyale.drawAsteroids()
     
-    -- Draw other players (only if not eliminated)
+    -- Draw other players
     if playersTable then
         for id, player in pairs(playersTable) do
-            -- Debug: Show elimination status
-            if player.battleEliminated then
-                debugConsole.addMessage("[Draw] Player " .. id .. " is ELIMINATED - not drawing")
-            else
-                debugConsole.addMessage("[Draw] Player " .. id .. " is ALIVE - drawing")
-            end
-            if id ~= localPlayerId and player.battleX and player.battleY and not player.battleEliminated then
+            if id ~= localPlayerId and player.battleX and player.battleY then
                 -- Draw ghost player body
                 love.graphics.setColor(player.color[1], player.color[2], player.color[3], 0.5)
                 love.graphics.rectangle('fill',
@@ -652,47 +550,39 @@ function battleRoyale.draw(playersTable, localPlayerId)
         end
     end
     
-    -- Draw spectator mode indicator for eliminated players
-    if battleRoyale.player_dropped and battleRoyale.death_animation_done then
-        love.graphics.setColor(1, 1, 1, 0.8)
-        love.graphics.printf("SPECTATOR MODE", 
-            0, 50, battleRoyale.screen_width, "center")
-        love.graphics.setColor(0.8, 0.8, 0.8, 0.6)
-        love.graphics.printf("You have been eliminated. Watch the remaining players.", 
-            0, 80, battleRoyale.screen_width, "center")
-    end
+    -- No spectator mode text needed with respawn mechanism
     
     -- Draw local player (only if not dropped)
     if not battleRoyale.player_dropped then
         if playersTable and playersTable[localPlayerId] then
-            -- Draw shield bubble if active
-            if battleRoyale.player.shield_active then
-                local shield_radius = 35 -- Larger, more prominent shield
+            -- Draw invincibility effect if active
+            if battleRoyale.player.is_invincible then
+                local invincibility_radius = 35
                 
                 -- Draw outer glow effect
-                love.graphics.setColor(0, 0.8, 1, 0.2)
+                love.graphics.setColor(1, 1, 0, 0.3)
                 love.graphics.circle('fill',
                     battleRoyale.player.x + battleRoyale.player.width/2,
                     battleRoyale.player.y + battleRoyale.player.height/2,
-                    shield_radius + 10
+                    invincibility_radius + 5
                 )
                 
-                -- Draw main shield bubble
-                love.graphics.setColor(0, 0.8, 1, 0.4) -- More visible blue bubble
+                -- Draw main invincibility bubble
+                love.graphics.setColor(1, 1, 0, 0.2)
                 love.graphics.circle('fill',
                     battleRoyale.player.x + battleRoyale.player.width/2,
                     battleRoyale.player.y + battleRoyale.player.height/2,
-                    shield_radius
+                    invincibility_radius
                 )
                 
-                -- Draw shield border with pulsing effect
+                -- Draw border with pulsing effect
                 local pulse = math.sin(love.timer.getTime() * 8) * 0.2 + 0.8
-                love.graphics.setColor(0, 0.8, 1, pulse)
-                love.graphics.setLineWidth(3)
+                love.graphics.setColor(1, 1, 0, pulse)
+                love.graphics.setLineWidth(2)
                 love.graphics.circle('line',
                     battleRoyale.player.x + battleRoyale.player.width/2,
                     battleRoyale.player.y + battleRoyale.player.height/2,
-                    shield_radius
+                    invincibility_radius
                 )
                 love.graphics.setLineWidth(1)
             end
@@ -720,11 +610,15 @@ function battleRoyale.draw(playersTable, localPlayerId)
             end
         end
     else
-        -- Draw death indicator
+        -- Draw death indicator with respawn countdown
         love.graphics.setColor(1, 0, 0, 0.7)
         love.graphics.rectangle('fill', battleRoyale.player.x, battleRoyale.player.y, battleRoyale.player.width, battleRoyale.player.height)
         love.graphics.setColor(1, 1, 1)
-        love.graphics.printf('ELIMINATED', battleRoyale.player.x - 20, battleRoyale.player.y - 30, battleRoyale.player.width + 40, 'center')
+        love.graphics.printf('RESPAWNING', battleRoyale.player.x - 30, battleRoyale.player.y - 30, battleRoyale.player.width + 60, 'center')
+        if battleRoyale.respawn_timer > 0 then
+            love.graphics.printf(string.format('%.1f', battleRoyale.respawn_timer), 
+                battleRoyale.player.x - 20, battleRoyale.player.y - 10, battleRoyale.player.width + 40, 'center')
+        end
     end
     
     -- Draw UI elements
@@ -769,11 +663,7 @@ function battleRoyale.drawSafeZone(playersTable)
         love.graphics.pop()
     end
     
-    -- If safe zone is completely closed, show a warning
-    if battleRoyale.safe_zone_radius <= 0 then
-        love.graphics.setColor(1, 0, 0, 1)
-        love.graphics.printf('SAFE ZONE CLOSED!', 0, battleRoyale.screen_height/2 - 20, battleRoyale.screen_width, 'center')
-    end
+    -- No warning text for minimum safe zone size
 end
 
 function battleRoyale.drawUI(playersTable, localPlayerId)
@@ -788,31 +678,18 @@ function battleRoyale.drawUI(playersTable, localPlayerId)
             math.floor(playersTable[localPlayerId].totalScore or 0), 10, 30)
     end
     
-    -- Display collected powerups
-    love.graphics.print('Collected Powerups:', 10, 50)
-    for i, powerUp in ipairs(battleRoyale.player.powerUpsCollected) do
-        love.graphics.print(i .. ': ' .. powerUp.type, 10, 70 + (i-1) * 20)
+    -- Display invincibility status
+    if battleRoyale.player.is_invincible then
+        love.graphics.setColor(1, 1, 0)
+        love.graphics.print('INVINCIBLE: ' .. string.format("%.1f", battleRoyale.player.invincibility_timer), 10, 50)
+        love.graphics.setColor(1, 1, 1)
     end
     
-    -- Display active effects
-    local activeY = 130
-    if battleRoyale.player.speed_up_active then
-        love.graphics.print('Speed Boost: ' .. string.format("%.1f", battleRoyale.player.speed_up_timer), 10, activeY)
-        activeY = activeY + 20
-    end
-    if battleRoyale.player.shield_active then
-        love.graphics.print('Shield Bubble: ' .. string.format("%.1f", battleRoyale.player.shield_timer), 10, activeY)
-        activeY = activeY + 20
-    end
-    if battleRoyale.player.laser_active then
-        love.graphics.print('Laser Gun: ' .. battleRoyale.player.laser_charges .. ' charges', 10, activeY)
-        love.graphics.print('Spacebar to Shoot', 10, activeY + 20)
-        activeY = activeY + 40
-    end
-    if battleRoyale.player.teleport_charges > 0 then
-        love.graphics.print('Teleport Charges: ' .. battleRoyale.player.teleport_charges, 10, activeY)
-        love.graphics.print('Spacebar to Teleport', 10, activeY + 20)
-        activeY = activeY + 40
+    -- Display respawn countdown if dead
+    if battleRoyale.player_dropped and battleRoyale.respawn_timer > 0 then
+        love.graphics.setColor(1, 0, 0)
+        love.graphics.print('RESPAWNING IN: ' .. string.format("%.1f", battleRoyale.respawn_timer), 10, 70)
+        love.graphics.setColor(1, 1, 1)
     end
     
     -- Show safe zone info
@@ -829,13 +706,17 @@ function battleRoyale.drawUI(playersTable, localPlayerId)
         timer_value = battleRoyale.shrink_duration
     else
         local elapsed_shrink_time = love.timer.getTime() - battleRoyale.shrink_start_time
-        if elapsed_shrink_time <= battleRoyale.shrink_duration then
+        if battleRoyale.is_growing then
+            phase_text = "GROWING"
+            phase_color = {0.5, 1, 0.5}
+            timer_value = battleRoyale.grow_timer
+        elseif elapsed_shrink_time <= battleRoyale.shrink_duration then
             phase_text = "SHRINKING"
             phase_color = {1, 0.5, 0.5}
             timer_value = battleRoyale.shrink_duration - elapsed_shrink_time
         else
-            phase_text = "CLOSED"
-            phase_color = {1, 0, 0}
+            phase_text = "STABLE"
+            phase_color = {0.5, 1, 0.5}
             timer_value = 0
         end
     end
@@ -846,15 +727,15 @@ function battleRoyale.drawUI(playersTable, localPlayerId)
     love.graphics.setColor(1, 1, 1)
     love.graphics.print('Time Left: ' .. string.format("%.1f", math.max(0, timer_value)), 10, battleRoyale.screen_height - 40)
     
-    -- Show active power-up status more prominently
-    if battleRoyale.player.laser_active then
+    -- Show respawn status more prominently
+    if battleRoyale.player_dropped and battleRoyale.respawn_timer > 0 then
         love.graphics.setColor(1, 0, 0)
-        love.graphics.printf('LASER ACTIVE - PRESS SPACEBAR TO SHOOT', 
+        love.graphics.printf('YOU DIED! RESPAWNING IN ' .. string.format("%.1f", battleRoyale.respawn_timer) .. ' SECONDS...', 
             0, battleRoyale.screen_height - 100, battleRoyale.screen_width, 'center')
         love.graphics.setColor(1, 1, 1)
-    elseif battleRoyale.player.teleport_charges > 0 then
-        love.graphics.setColor(0, 1, 0)
-        love.graphics.printf('TELEPORT READY - PRESS SPACEBAR TO TELEPORT', 
+    elseif battleRoyale.player.is_invincible then
+        love.graphics.setColor(1, 1, 0)
+        love.graphics.printf('INVINCIBLE - PROTECTED FROM ASTEROIDS', 
             0, battleRoyale.screen_height - 100, battleRoyale.screen_width, 'center')
         love.graphics.setColor(1, 1, 1)
     end
@@ -916,20 +797,7 @@ function battleRoyale.updateStars(dt)
     end
 end
 
-function battleRoyale.createPowerUps()
-    battleRoyale.powerUps = {}
-    -- No initial power-ups - they spawn dynamically during gameplay
-end
-
-function battleRoyale.collectPowerUp(powerUp)
-    if #battleRoyale.player.powerUpsCollected < battleRoyale.player.max_powerUps then
-        table.insert(battleRoyale.player.powerUpsCollected, powerUp)
-        debugConsole.addMessage("[BattleRoyale] Collected powerup: " .. powerUp.type)
-        -- Play collection sound here 
-        return true
-    end
-    return false
-end
+-- Power-up functions removed
 
 function battleRoyale.drawStars()
     for _, star in ipairs(battleRoyale.stars) do
@@ -938,436 +806,28 @@ function battleRoyale.drawStars()
     end
 end
 
-function battleRoyale.drawPowerUps()
-    for _, powerUp in ipairs(battleRoyale.powerUps) do
-        local center_x = powerUp.x + powerUp.width/2
-        local center_y = powerUp.y + powerUp.height/2
-        local radius = powerUp.width/2
-        
-        -- Draw blue circle (all look the same)
-        love.graphics.setColor(0.2, 0.6, 1.0)  -- Bright blue
-        love.graphics.circle('fill', center_x, center_y, radius)
-        
-        -- Draw blue circle border
-        love.graphics.setColor(0.1, 0.4, 0.8)  -- Darker blue border
-        love.graphics.setLineWidth(2)
-        love.graphics.circle('line', center_x, center_y, radius)
-        love.graphics.setLineWidth(1)
-        
-        -- Draw question mark
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.printf("?",
-            powerUp.x,
-            powerUp.y + powerUp.height/4,
-            powerUp.width,
-            'center')
-    end
-end
-
-function battleRoyale.drawLasers()
-    for i, laser in ipairs(battleRoyale.lasers) do
-        -- Draw laser bullet as a small circle
-        love.graphics.setColor(1, 1, 1, 1) -- Bright white core
-        love.graphics.circle('fill', laser.x, laser.y, laser.size)
-        
-        -- Draw red glow around it
-        love.graphics.setColor(1, 0, 0, 0.6) -- Red glow
-        love.graphics.circle('fill', laser.x, laser.y, laser.size + 2)
-        
-        -- Draw bright center
-        love.graphics.setColor(1, 1, 1, 1) -- Bright white center
-        love.graphics.circle('fill', laser.x, laser.y, laser.size - 1)
-    end
-end
-
-function battleRoyale.drawOtherPlayersLasers(playersTable)
-    if not playersTable then return end
-    
-    for id, player in pairs(playersTable) do
-        if player.battleLasers and player.battleLasers ~= "" then
-            -- Parse laser data: "x,y,vx,vy,time,duration,size|x,y,vx,vy,time,duration,size|..."
-            local laserStrings = {}
-            for laserStr in player.battleLasers:gmatch("([^|]+)") do
-                table.insert(laserStrings, laserStr)
-            end
-            
-            for _, laserStr in ipairs(laserStrings) do
-                local x, y, vx, vy, time, duration, size = laserStr:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
-                if x and y and vx and vy and time and duration and size then
-                    x, y, vx, vy, time, duration, size = tonumber(x), tonumber(y), tonumber(vx), tonumber(vy), tonumber(time), tonumber(duration), tonumber(size)
-                    
-                    -- Check if laser is still valid (not expired)
-                    if time < duration then
-                        -- Draw laser bullet as a small circle
-                        love.graphics.setColor(1, 1, 1, 1) -- Bright white core
-                        love.graphics.circle('fill', x, y, size)
-                        
-                        -- Draw red glow around it
-                        love.graphics.setColor(1, 0, 0, 0.6) -- Red glow
-                        love.graphics.circle('fill', x, y, size + 2)
-                        
-                        -- Draw bright center
-                        love.graphics.setColor(1, 1, 1, 1) -- Bright white center
-                        love.graphics.circle('fill', x, y, size - 1)
-                    end
-                end
-            end
-        end
-    end
-end
+-- Power-up and laser drawing functions removed
 
 
 function battleRoyale.keypressed(key)
     print("[BattleRoyale] Key pressed: " .. key)
     debugConsole.addMessage("[BattleRoyale] Key pressed: " .. key)
-    
-    if key == ' ' then -- Spacebar for all power-up actions
-        debugConsole.addMessage("[BattleRoyale] Spacebar pressed!")
-        debugConsole.addMessage("[BattleRoyale] Power-ups collected: " .. #battleRoyale.player.powerUpsCollected)
-        debugConsole.addMessage("[BattleRoyale] Laser active: " .. tostring(battleRoyale.player.laser_active))
-        debugConsole.addMessage("[BattleRoyale] Teleport charges: " .. battleRoyale.player.teleport_charges)
-        
-        -- First check if we have collected power-ups to activate
-        if #battleRoyale.player.powerUpsCollected > 0 then
-            local powerUp = table.remove(battleRoyale.player.powerUpsCollected, 1)
-            if powerUp then
-                debugConsole.addMessage("[BattleRoyale] Activating power-up: " .. powerUp.type)
-                -- Play sound effect
-                sounds.powerup:stop()
-                sounds.powerup:play()
-                
-                battleRoyale.activateSpecificPowerUp(powerUp.type)
-            end
-        -- If no power-ups to activate, check for active power-up actions
-        elseif battleRoyale.player.laser_active then
-            debugConsole.addMessage("[BattleRoyale] Shooting laser!")
-            battleRoyale.shootLaser()
-        elseif battleRoyale.player.teleport_charges > 0 then
-            debugConsole.addMessage("[BattleRoyale] Teleporting!")
-            battleRoyale.teleportPlayer()
-        else
-            debugConsole.addMessage("[BattleRoyale] No power-up actions available")
-        end
-    end
+    -- No special key handling needed without power-ups
 end
 
--- Add a new function to handle spacebar using isDown like jump game
 function battleRoyale.handleSpacebar()
-    -- Don't allow power-up usage if eliminated
-    if battleRoyale.player_dropped then return end
-    
-    if love.keyboard.isDown('space') then
-        -- Only trigger once per press by using a flag
-        if not battleRoyale.spacebarPressed then
-            battleRoyale.spacebarPressed = true
-            print("[BattleRoyale] Spacebar detected via isDown!")
-            debugConsole.addMessage("[BattleRoyale] Spacebar detected via isDown!")
-            debugConsole.addMessage("[BattleRoyale] Power-ups collected: " .. #battleRoyale.player.powerUpsCollected)
-            debugConsole.addMessage("[BattleRoyale] Laser active: " .. tostring(battleRoyale.player.laser_active))
-            debugConsole.addMessage("[BattleRoyale] Teleport charges: " .. battleRoyale.player.teleport_charges)
-            
-            -- First check if we have collected power-ups to activate
-            if #battleRoyale.player.powerUpsCollected > 0 then
-                local powerUp = table.remove(battleRoyale.player.powerUpsCollected, 1)
-                if powerUp then
-                    debugConsole.addMessage("[BattleRoyale] Activating power-up: " .. powerUp.type)
-                    -- Play sound effect
-                    sounds.powerup:stop()
-                    sounds.powerup:play()
-                    
-                    battleRoyale.activateSpecificPowerUp(powerUp.type)
-                end
-            -- If no power-ups to activate, check for active power-up actions
-            elseif battleRoyale.player.laser_active then
-                debugConsole.addMessage("[BattleRoyale] Shooting laser!")
-                battleRoyale.shootLaser()
-            elseif battleRoyale.player.teleport_charges > 0 then
-                debugConsole.addMessage("[BattleRoyale] Teleporting!")
-                battleRoyale.teleportPlayer()
-            else
-                debugConsole.addMessage("[BattleRoyale] No power-up actions available")
-            end
-        end
-    else
-        battleRoyale.spacebarPressed = false
-    end
+    -- No spacebar functionality needed without power-ups
 end
 
 function battleRoyale.mousepressed(x, y, button)
-    -- Mouse input removed - using spacebar for power-ups
-end
-
-function battleRoyale.shootLaser()
-    if battleRoyale.player.laser_active and battleRoyale.player.laser_charges > 0 then
-        local player_center_x = battleRoyale.player.x + battleRoyale.player.width/2
-        local player_center_y = battleRoyale.player.y + battleRoyale.player.height/2
-        
-        -- Calculate angle based on player movement direction (including diagonal)
-        local dx, dy = 0, 0
-        local moving = false
-        
-        -- Check horizontal movement
-        if love.keyboard.isDown('a') or love.keyboard.isDown('left') then
-            dx = dx - 1
-            moving = true
-        end
-        if love.keyboard.isDown('d') or love.keyboard.isDown('right') then
-            dx = dx + 1
-            moving = true
-        end
-        
-        -- Check vertical movement
-        if love.keyboard.isDown('w') or love.keyboard.isDown('up') then
-            dy = dy - 1
-            moving = true
-        end
-        if love.keyboard.isDown('s') or love.keyboard.isDown('down') then
-            dy = dy + 1
-            moving = true
-        end
-        
-        -- Calculate angle from movement vector
-        local angle = 0
-        if moving and (dx ~= 0 or dy ~= 0) then
-            angle = math.atan2(dy, dx)
-            battleRoyale.player.last_movement_angle = angle
-        else
-            -- If not moving, shoot in last movement direction or default right
-            angle = battleRoyale.player.last_movement_angle or 0
-        end
-        
-        local laser = {
-            x = player_center_x,
-            y = player_center_y,
-            angle = angle,
-            speed = 600, -- Speed in pixels per second
-            size = 5,   -- Slightly smaller bullet size
-            duration = 2.5, -- How long it exists
-            time = 0,
-            vx = math.cos(angle) * 600, -- Velocity X
-            vy = math.sin(angle) * 600  -- Velocity Y
-        }
-        table.insert(battleRoyale.lasers, laser)
-        
-        -- Use one charge
-        battleRoyale.player.laser_charges = battleRoyale.player.laser_charges - 1
-        
-        -- Play laser sound
-        sounds.laser:stop()
-        sounds.laser:play()
-        
-        -- Send laser data to other players (like laser game does)
-        if _G.localPlayer and _G.localPlayer.id then
-            local laserData = string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f",
-                laser.x, laser.y, laser.vx, laser.vy, laser.time, laser.duration, laser.size)
-            
-            if _G.returnState == "hosting" and _G.serverClients then
-                for _, client in ipairs(_G.serverClients) do
-                    _G.safeSend(client, string.format("battle_laser_shot,%d,%s", 
-                        _G.localPlayer.id, laserData))
-                end
-            elseif _G.returnState == "playing" and _G.server then
-                _G.safeSend(_G.server, string.format("battle_laser_shot,%d,%s", 
-                    _G.localPlayer.id, laserData))
-            end
-        end
-    end
+    -- No mouse input needed without power-ups
 end
 
 function battleRoyale.keyreleased(key)
     battleRoyale.keysPressed[key] = false
 end
 
-function battleRoyale.teleportPlayer()
-    if battleRoyale.player.teleport_charges > 0 then
-        -- Teleport to center of safe zone
-        battleRoyale.player.x = battleRoyale.center_x - battleRoyale.player.width/2
-        battleRoyale.player.y = battleRoyale.center_y - battleRoyale.player.height/2
-        
-        -- Use one charge
-        battleRoyale.player.teleport_charges = battleRoyale.player.teleport_charges - 1
-        
-        -- Play sound effect
-        sounds.powerup:stop()
-        sounds.powerup:play()
-        
-        -- Send teleport notification to other players
-        if _G.localPlayer and _G.localPlayer.id then
-            if _G.returnState == "hosting" and _G.serverClients then
-                for _, client in ipairs(_G.serverClients) do
-                    _G.safeSend(client, string.format("battle_teleport,%d,%.2f,%.2f", 
-                        _G.localPlayer.id, battleRoyale.player.x, battleRoyale.player.y))
-                end
-            elseif _G.returnState == "playing" and _G.server then
-                _G.safeSend(_G.server, string.format("battle_teleport,%d,%.2f,%.2f", 
-                    _G.localPlayer.id, battleRoyale.player.x, battleRoyale.player.y))
-            end
-        end
-    end
-end
-
-function battleRoyale.activateSpecificPowerUp(type)
-    -- Deactivate all other power-ups first
-    battleRoyale.player.speed_up_active = false
-    battleRoyale.player.shield_active = false
-    battleRoyale.player.laser_active = false
-    battleRoyale.player.laser_charges = 0
-    battleRoyale.player.teleport_charges = 0
-    
-    if type == 'speed' then
-        battleRoyale.player.speed_up_active = true
-        battleRoyale.player.speed_up_timer = 3
-        battleRoyale.player.speed = battleRoyale.player.normal_speed * 1.5
-        
-    elseif type == 'shield' then
-        battleRoyale.player.shield_active = true
-        battleRoyale.player.shield_timer = 4
-        
-    elseif type == 'laser' then
-        battleRoyale.player.laser_active = true
-        battleRoyale.player.laser_charges = 4
-        
-    elseif type == 'teleport' then
-        battleRoyale.player.teleport_charges = 2
-    end
-end
-
-function battleRoyale.updatePowerUps(dt)
-    -- Check if we need to spawn any power-ups based on pre-calculated spawn points
-    while #battleRoyale.powerUpSpawnPoints > 0 and battleRoyale.powerUpSpawnPoints[1].time <= battleRoyale.gameTime do
-        battleRoyale.spawnPowerUpFromSpawnPoint(table.remove(battleRoyale.powerUpSpawnPoints, 1))
-    end
-    
-    -- Update existing power-ups and remove those outside circle for too long
-    for i = #battleRoyale.powerUps, 1, -1 do
-        local powerUp = battleRoyale.powerUps[i]
-        
-        -- Move power-ups like meteoroids
-        if powerUp.is_moving then
-            powerUp.x = powerUp.x + powerUp.vx * dt
-            powerUp.y = powerUp.y + powerUp.vy * dt
-            
-            -- Remove if off screen
-            if powerUp.x < -100 or powerUp.x > battleRoyale.screen_width + 100 or
-               powerUp.y < -100 or powerUp.y > battleRoyale.screen_height + 100 then
-                table.remove(battleRoyale.powerUps, i)
-            end
-        end
-        
-        -- Power-ups no longer have safe zone timer - they persist until off-screen
-    end
-end
-
-function battleRoyale.spawnPowerUpFromSpawnPoint(spawnInfo)
-    local side = spawnInfo.side
-    local speed = spawnInfo.speed
-    local pType = spawnInfo.type
-    
-    -- Spawn from screen edges like meteoroids
-    local powerUp = {
-        width = 35,
-        height = 35,
-        type = pType,
-        outside_circle_time = 0,
-        speed = speed,
-        is_moving = true,
-        spawnTime = spawnInfo.time,
-        spawnSide = side
-    }
-    
-    -- Calculate angle towards safe zone center
-    local angle_to_center = 0
-    local spawn_x, spawn_y = 0, 0
-    
-    if side == 1 then -- Top
-        spawn_x = battleRoyale.random:random(0, battleRoyale.screen_width)
-        spawn_y = -50
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    elseif side == 2 then -- Right
-        spawn_x = battleRoyale.screen_width + 50
-        spawn_y = battleRoyale.random:random(0, battleRoyale.screen_height)
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    elseif side == 3 then -- Bottom
-        spawn_x = battleRoyale.random:random(0, battleRoyale.screen_width)
-        spawn_y = battleRoyale.screen_height + 50
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    else -- Left
-        spawn_x = -50
-        spawn_y = battleRoyale.random:random(0, battleRoyale.screen_height)
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    end
-    
-    -- Add some randomness to the angle (within 45 degrees of center direction)
-    local angle_variance = battleRoyale.random:random(-math.pi/4, math.pi/4) -- ±45 degrees
-    local final_angle = angle_to_center + angle_variance
-    
-    -- Set position and velocity
-    powerUp.x = spawn_x
-    powerUp.y = spawn_y
-    powerUp.vx = math.cos(final_angle) * powerUp.speed
-    powerUp.vy = math.sin(final_angle) * powerUp.speed
-    
-    table.insert(battleRoyale.powerUps, powerUp)
-end
-
-function battleRoyale.spawnPowerUp()
-    local powerUpTypes = {'speed', 'shield', 'laser', 'teleport'}
-    
-    -- Remove teleport from available types during final 13 seconds
-    local time_remaining = battleRoyale.timer
-    if time_remaining <= 13 then
-        powerUpTypes = {'speed', 'shield', 'laser'} -- No teleport in final 13 seconds
-    end
-    
-    local pType = powerUpTypes[math.random(1, #powerUpTypes)]
-    
-    -- Spawn from screen edges like meteoroids
-    local side = math.random(1, 4) -- 1=top, 2=right, 3=bottom, 4=left
-    local base_speed = 150 -- Faster than before
-    local speed_variance = math.random(50, 100) -- Add 50-100 pixels/second variance
-    local powerUp = {
-        width = 35,
-        height = 35,
-        type = pType,
-        outside_circle_time = 0,
-        speed = base_speed + speed_variance, -- 200-250 pixels/second with variance
-        is_moving = true
-    }
-    
-    -- Calculate angle towards safe zone center
-    local angle_to_center = 0
-    local spawn_x, spawn_y = 0, 0
-    
-    if side == 1 then -- Top
-        spawn_x = math.random(0, battleRoyale.screen_width)
-        spawn_y = -50
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    elseif side == 2 then -- Right
-        spawn_x = battleRoyale.screen_width + 50
-        spawn_y = math.random(0, battleRoyale.screen_height)
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    elseif side == 3 then -- Bottom
-        spawn_x = math.random(0, battleRoyale.screen_width)
-        spawn_y = battleRoyale.screen_height + 50
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    else -- Left
-        spawn_x = -50
-        spawn_y = math.random(0, battleRoyale.screen_height)
-        angle_to_center = math.atan2(battleRoyale.center_y - spawn_y, battleRoyale.center_x - spawn_x)
-    end
-    
-    -- Add some randomness to the angle (within 45 degrees of center direction)
-    local angle_variance = math.random(-math.pi/4, math.pi/4) -- ±45 degrees
-    local final_angle = angle_to_center + angle_variance
-    
-    -- Set position and velocity
-    powerUp.x = spawn_x
-    powerUp.y = spawn_y
-    powerUp.vx = math.cos(final_angle) * powerUp.speed
-    powerUp.vy = math.sin(final_angle) * powerUp.speed
-    
-    table.insert(battleRoyale.powerUps, powerUp)
-end
+-- All power-up related functions removed
 
 function battleRoyale.updateAsteroids(dt)
     -- Check if we need to spawn any asteroids based on pre-calculated spawn points
@@ -1515,77 +975,18 @@ function battleRoyale.checkAsteroidCollisions()
             width = asteroid.size,
             height = asteroid.size
         }) then
-            if not battleRoyale.player.shield_active and not battleRoyale.player_dropped then
+            if not battleRoyale.player.is_invincible and not battleRoyale.player_dropped then
                 battleRoyale.player_dropped = true
                 battleRoyale.death_timer = 2 -- 2 second death animation
                 battleRoyale.death_shake = 15 -- Shake intensity
-                debugConsole.addMessage("[BattleRoyale] Player hit by asteroid!")
-                
-                -- Mark player as eliminated in players table
-                if _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
-                    _G.players[_G.localPlayer.id].battleEliminated = true
-                end
-                -- Also mark local player as eliminated
-                if _G and _G.localPlayer then
-                    _G.localPlayer.battleEliminated = true
-                    debugConsole.addMessage("[BattleRoyale] Local player ELIMINATED by asteroid!")
-                end
-            else
-                debugConsole.addMessage("[BattleRoyale] Asteroid blocked by shield!")
+                battleRoyale.respawn_timer = battleRoyale.respawn_delay -- Start respawn timer
+                debugConsole.addMessage("[BattleRoyale] Player hit by asteroid! Respawning in " .. battleRoyale.respawn_delay .. " seconds...")
             end
         end
     end
 end
 
-function battleRoyale.checkLaserCollisions()
-    if not _G or not _G.players then return end
-    
-    for id, player in pairs(_G.players) do
-        if player.battleLasers and player.battleLasers ~= "" and _G.localPlayer and id ~= _G.localPlayer.id then
-            -- Parse laser data
-            local laserStrings = {}
-            for laserStr in player.battleLasers:gmatch("([^|]+)") do
-                table.insert(laserStrings, laserStr)
-            end
-            
-            for _, laserStr in ipairs(laserStrings) do
-                local x, y, vx, vy, time, duration, size = laserStr:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
-                if x and y and vx and vy and time and duration and size then
-                    x, y, vx, vy, time, duration, size = tonumber(x), tonumber(y), tonumber(vx), tonumber(vy), tonumber(time), tonumber(duration), tonumber(size)
-                    
-                    -- Check if laser is still valid (not expired)
-                    if time < duration then
-                        -- Check collision with local player
-                        if battleRoyale.checkCollision(battleRoyale.player, {
-                            x = x - size/2,
-                            y = y - size/2,
-                            width = size,
-                            height = size
-                        }) then
-                            if not battleRoyale.player.shield_active and not battleRoyale.player_dropped then
-                                battleRoyale.player_dropped = true
-                                battleRoyale.death_timer = 2 -- 2 second death animation
-                                battleRoyale.death_shake = 15 -- Shake intensity
-                                debugConsole.addMessage("[BattleRoyale] Player hit by laser from player " .. id .. "!")
-                                
-                                -- Mark player as eliminated in players table
-                                if _G and _G.localPlayer and _G.localPlayer.id and _G.players and _G.players[_G.localPlayer.id] then
-                                    _G.players[_G.localPlayer.id].battleEliminated = true
-                                end
-                                -- Also mark local player as eliminated
-                                if _G and _G.localPlayer then
-                                    _G.localPlayer.battleEliminated = true
-                                end
-                            else
-                                debugConsole.addMessage("[BattleRoyale] Laser blocked by shield!")
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
+-- Laser collisions removed - no power-ups in this version
 
 function battleRoyale.reset()
     battleRoyale.load()
@@ -1605,6 +1006,7 @@ function battleRoyale.sendGameStateSync()
             battleRoyale.safe_zone_radius)
         
         for _, client in ipairs(_G.serverClients) do
+            -- Use the global safeSend function
             if _G.safeSend then
                 _G.safeSend(client, message)
             end

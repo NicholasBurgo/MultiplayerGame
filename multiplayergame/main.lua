@@ -33,6 +33,7 @@ local partyMode = false
 _G.partyMode = partyMode -- Make it globally accessible
 local currentPartyGame = nil
 local isFirstPartyInstruction = true
+local partyModeTransitioned = false -- Prevent multiple transitions
 
 -- Round tracking system
 local currentRound = 1
@@ -46,12 +47,6 @@ local scoreDisplayDuration = 3 -- Show for 3 seconds
 local miniGameLineup = {
     "jumpgame",
     "lasergame", 
-    "battleroyale",
-    "jumpgame", -- Repeat some games
-    "lasergame",
-    "battleroyale",
-    "jumpgame",
-    "lasergame",
     "battleroyale"
 }
 local currentGameIndex = 1
@@ -85,7 +80,6 @@ local updateTimer = 0
 
 -- Game state synchronization
 local gameStateSync = {
-    powerUps = {},
     meteoroids = {},
     safeZone = {center_x = 400, center_y = 300, radius = 450},
     gameTime = 0,
@@ -119,14 +113,14 @@ function initializeRoundWins()
         -- Initialize game-specific tracking
         players[id].jumpScore = 0
         players[id].laserHits = 0
-        players[id].battleEliminated = false
+        players[id].battleScore = 0
     end
     if localPlayer.id then
         roundWins[localPlayer.id] = 0
         if players[localPlayer.id] then
             players[localPlayer.id].jumpScore = 0
             players[localPlayer.id].laserHits = 0
-            players[localPlayer.id].battleEliminated = false
+            players[localPlayer.id].battleScore = 0
         end
     end
 end
@@ -319,23 +313,26 @@ function safeSend(peer, message)
     end
 end
 
+-- Make safeSend available globally for battle royale
+_G.safeSend = safeSend
+_G.serverClients = serverClients
+
 -- Game state synchronization functions
 function syncGameState()
     debugConsole.addMessage("[Sync] syncGameState called - gameState: " .. gameState .. ", returnState: " .. tostring(returnState) .. ", clients: " .. #serverClients)
     
     if gameState == "battleroyale" and returnState == "hosting" then
         -- Host sends complete game state to all clients
-        local powerUpData = serializePowerUps(battleRoyale.powerUps)
         local meteoroidData = serializeMeteoroids(battleRoyale.asteroids)
         local safeZoneData = string.format("%.2f,%.2f,%.2f", 
             battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius)
         
         -- Simplified message for testing
-        local message = string.format("game_state_sync,test_powerups,test_meteoroids,%.2f,%.2f,%.2f,%.2f", 
+        local message = string.format("game_state_sync,test_meteoroids,%.2f,%.2f,%.2f,%.2f", 
             battleRoyale.center_x, battleRoyale.center_y, battleRoyale.safe_zone_radius, battleRoyale.timer)
         
         debugConsole.addMessage("[Sync] Message length: " .. #message)
-        debugConsole.addMessage("[Sync] PowerUps: " .. #battleRoyale.powerUps .. ", Asteroids: " .. #battleRoyale.asteroids)
+        debugConsole.addMessage("[Sync] Asteroids: " .. #battleRoyale.asteroids)
         
         for _, client in ipairs(serverClients) do
             safeSend(client, message)
@@ -343,7 +340,6 @@ function syncGameState()
         end
         
         -- Update local sync state
-        gameStateSync.powerUps = battleRoyale.powerUps
         gameStateSync.meteoroids = battleRoyale.asteroids
         gameStateSync.safeZone = {
             center_x = battleRoyale.center_x,
@@ -359,15 +355,6 @@ function syncGameState()
     end
 end
 
-function serializePowerUps(powerUps)
-    local powerUpStrings = {}
-    for i, powerUp in ipairs(powerUps) do
-        table.insert(powerUpStrings, string.format("%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%d",
-            powerUp.x, powerUp.y, powerUp.vx or 0, powerUp.vy or 0, 
-            powerUp.width, powerUp.height, powerUp.type, powerUp.is_moving and 1 or 0))
-    end
-    return table.concat(powerUpStrings, "|")
-end
 
 function serializeMeteoroids(meteoroids)
     local meteoroidStrings = {}
@@ -378,27 +365,6 @@ function serializeMeteoroids(meteoroids)
     return table.concat(meteoroidStrings, "|")
 end
 
-function deserializePowerUps(data)
-    local powerUps = {}
-    if data and data ~= "" then
-        for powerUpStr in data:gmatch("([^|]+)") do
-            local x, y, vx, vy, width, height, type, is_moving = powerUpStr:match("([-%d.]+),([-%d.]+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([^,]+),([%d.]+)")
-            if x and y and vx and vy and width and height and type and is_moving then
-                table.insert(powerUps, {
-                    x = tonumber(x),
-                    y = tonumber(y),
-                    vx = tonumber(vx),
-                    vy = tonumber(vy),
-                    width = tonumber(width),
-                    height = tonumber(height),
-                    type = type,
-                    is_moving = tonumber(is_moving) == 1
-                })
-            end
-        end
-    end
-    return powerUps
-end
 
 function deserializeMeteoroids(data)
     local meteoroids = {}
@@ -505,26 +471,19 @@ function love.update(dt)
         currentPartyGame = "lasergame"
     elseif gameState == "battleroyale" then
         currentPartyGame = "battleroyale"
-    elseif gameState == "racegame" then
-        currentPartyGame = "racegame"
     end
 
-    -- Check for party mode transition flag
-    if _G.partyModeTransition then
+    -- Check for party mode transition flag (host only)
+    if _G.partyModeTransition and returnState == "hosting" then
         _G.partyModeTransition = false
-        debugConsole.addMessage("[PartyMode] Transitioning to next game after battle royale")
+        partyModeTransitioned = false -- Reset the flag for next game
+        debugConsole.addMessage("[PartyMode] Host transitioning to next game")
         
         -- Reset battle royale state
         battleRoyale.game_over = false
         battleRoyale.death_animation_done = false
         
-        -- Reset all player elimination states for next game
-        for id, player in pairs(players) do
-            player.battleEliminated = false
-        end
-        if localPlayer then
-            localPlayer.battleEliminated = false
-        end
+        -- No elimination system in battle royale - players respawn instead
         
         -- Get next game from lineup
         currentGameIndex = currentGameIndex + 1
@@ -536,90 +495,52 @@ function love.update(dt)
         currentPartyGame = nextGame
         debugConsole.addMessage("[Party Mode] Next game: " .. nextGame)
         
-        -- Start the next game
+        -- Start the next game directly (no instructions in party mode transitions)
         if nextGame == "jumpgame" then
-            instructions.clear()    
-            love.keypressed("1")
+            gameState = "jumpgame"
+            jumpGame.reset(players)
+            jumpGame.setPlayerColor(localPlayer.color)
+            
+            -- Host notifies clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, "start_jump_game")
+            end
         elseif nextGame == "lasergame" then
-            instructions.clear()    
-            love.keypressed("2")
+            gameState = "lasergame"
+            local seed = os.time() + love.timer.getTime() * 10000
+            laserGame.reset()
+            laserGame.setSeed(seed)
+            laserGame.setPlayerColor(localPlayer.color)
+            
+            -- Host notifies clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, "start_laser_game," .. seed)
+            end
         elseif nextGame == "battleroyale" then
-            instructions.clear()    
-            -- For party mode transitions, we need to handle battle royale specially
-            -- because clients need to receive the start message
-            debugConsole.addMessage("[PartyMode] Starting battle royale transition")
-            instructions.show("battleroyale", function()
-                print("[Main] Switching to battle royale mode in party mode!")
-                debugConsole.addMessage("[Main] Starting battle royale in party mode - party mode: " .. tostring(_G.partyMode))
-                gameState = "battleroyale"
-                returnState = "hosting"
-                _G.returnState = "hosting"
-                _G.gameState = "battleroyale"
-                _G.players = players
-                _G.localPlayer = localPlayer
-                initializeRoundWins()
-                local seed = os.time() + love.timer.getTime() * 10000
-                battleRoyale.reset()
-                battleRoyale.setSeed(seed)
-                battleRoyale.setPlayerColor(localPlayer.color)
-                
-                -- Send game start to all clients
-                debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients in party mode")
-                for _, client in ipairs(serverClients) do
-                    safeSend(client, "start_battleroyale_game," .. seed)
-                    debugConsole.addMessage("[Host] Sent battle royale start to client in party mode")
-                end
-            end)
+            gameState = "battleroyale"
+            _G.returnState = returnState
+            _G.gameState = "battleroyale"
+            _G.players = players
+            _G.localPlayer = localPlayer
+            initializeRoundWins()
+            local seed = os.time() + love.timer.getTime() * 10000
+            battleRoyale.reset()
+            battleRoyale.setSeed(seed)
+            battleRoyale.setPlayerColor(localPlayer.color)
+            
+            -- Host notifies clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, "start_battleroyale_game," .. seed)
+            end
+        end
+        
+        -- Send specific game transition to clients
+        for _, client in ipairs(serverClients) do
+            safeSend(client, "party_transition_to," .. nextGame)
         end
     end
 
-    -- Only check party mode transitions when we're actually in the lobby
-    if partyMode and gameState == "hosting" and not instructions.isTransitioning then
-        -- Get next game from lineup
-        currentGameIndex = currentGameIndex + 1
-        if currentGameIndex > #miniGameLineup then
-            currentGameIndex = 1 -- Loop back to start
-        end
-        
-        local nextGame = miniGameLineup[currentGameIndex]
-        currentPartyGame = nextGame
-        
-        -- Start the next game
-        if nextGame == "jumpgame" then
-            instructions.clear()    
-            love.keypressed("1")
-        elseif nextGame == "lasergame" then
-            instructions.clear()    
-            love.keypressed("2")
-        elseif nextGame == "battleroyale" then
-            instructions.clear()    
-            -- For party mode transitions, we need to handle battle royale specially
-            -- because clients need to receive the start message
-            debugConsole.addMessage("[PartyMode] Starting battle royale transition (regular check)")
-            instructions.show("battleroyale", function()
-                print("[Main] Switching to battle royale mode in party mode (regular check)!")
-                debugConsole.addMessage("[Main] Starting battle royale in party mode (regular check) - party mode: " .. tostring(_G.partyMode))
-                gameState = "battleroyale"
-                returnState = "hosting"
-                _G.returnState = "hosting"
-                _G.gameState = "battleroyale"
-                _G.players = players
-                _G.localPlayer = localPlayer
-                initializeRoundWins()
-                local seed = os.time() + love.timer.getTime() * 10000
-                battleRoyale.reset()
-                battleRoyale.setSeed(seed)
-                battleRoyale.setPlayerColor(localPlayer.color)
-                
-                -- Send game start to all clients
-                debugConsole.addMessage("[Host] Sending battle royale start to " .. #serverClients .. " clients in party mode (regular check)")
-                for _, client in ipairs(serverClients) do
-                    safeSend(client, "start_battleroyale_game," .. seed)
-                    debugConsole.addMessage("[Host] Sent battle royale start to client in party mode (regular check)")
-                end
-            end)
-        end
-    end
+    -- Removed duplicate party mode transition logic - now handled above
 
     if partyMode then
         if gameState == "jumpgame" then
@@ -628,8 +549,6 @@ function love.update(dt)
             currentPartyGame = "lasergame"
         elseif gameState == "battleroyale" then
             currentPartyGame = "battleroyale"
-        elseif gameState == "racegame" then
-            currentPartyGame = "racegame"
         end
     end
 
@@ -700,6 +619,17 @@ function love.update(dt)
                 scoreLobby.show(currentRound, roundWins, players)
             end
             
+            -- Check if we should transition in party mode (only once)
+            if partyMode and not partyModeTransitioned then
+                partyModeTransitioned = true
+                -- In jump game, transition when the timer runs out (game ends naturally)
+                debugConsole.addMessage("Jump game finished, transitioning to next game")
+                _G.partyModeTransition = true
+                debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                
+                -- Host will handle the transition in the main loop
+            end
+            
             -- Only return to lobby if not in party mode transition
             if not _G.partyModeTransition then
                 gameState = returnState
@@ -708,6 +638,7 @@ function love.update(dt)
                 debugConsole.addMessage("Party mode transition active, staying in jump game state")
             end
             jumpGame.reset()
+            partyModeTransitioned = false -- Reset for next game
         end
     elseif gameState == "lasergame" then
         if returnState == "hosting" then
@@ -790,6 +721,17 @@ function love.update(dt)
                 scoreLobby.show(currentRound, roundWins, players)
             end
             
+            -- Check if we should transition in party mode (only once)
+            if partyMode and not partyModeTransitioned then
+                partyModeTransitioned = true
+                -- In laser game, transition when the game ends naturally
+                debugConsole.addMessage("Laser game finished, transitioning to next game")
+                _G.partyModeTransition = true
+                debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                
+                -- Host will handle the transition in the main loop
+            end
+            
             -- Only return to lobby if not in party mode transition
             if not _G.partyModeTransition then
                 gameState = returnState
@@ -811,7 +753,7 @@ function love.update(dt)
             testSyncTimer = testSyncTimer + dt
             if testSyncTimer >= 1.0 then
                 testSyncTimer = 0
-                debugConsole.addMessage("[Host] Powerups: " .. #battleRoyale.powerUps .. ", Meteoroids: " .. #battleRoyale.asteroids .. ", Clients: " .. #serverClients)
+                debugConsole.addMessage("[Host] Meteoroids: " .. #battleRoyale.asteroids .. ", Clients: " .. #serverClients)
             end
             updateServer()
         else
@@ -820,47 +762,42 @@ function love.update(dt)
 
         battleRoyale.update(dt)
 
-        if battleRoyale.game_over and battleRoyale.death_animation_done then
+        if battleRoyale.game_over then
             debugConsole.addMessage("Battle Royale game over, returning to state: " .. returnState)
             
-            -- Award round win to last person standing (not the one who just died)
-            local winnerId = nil
+            -- Award round win to player with highest survival score
+            local winnerId = localPlayer.id
+            local highestScore = battleRoyale.current_round_score
+            
+            -- Check all players for highest score
             for id, player in pairs(players) do
-                if player.battleX and player.battleY and not player.battleEliminated then
+                if player.battleScore and player.battleScore > highestScore then
+                    highestScore = player.battleScore
                     winnerId = id
-                    break
                 end
             end
             
-            if winnerId then
-                if returnState == "hosting" and serverClients and #serverClients > 0 then
-                    awardRoundWin(winnerId)
-                    checkForScoreDisplay()
-                    
-                    -- Broadcast round win
-                    for _, client in ipairs(serverClients) do
-                        safeSend(client, string.format("round_win,%d", winnerId))
-                    end
-                elseif returnState == "playing" and server and connected then
-                    safeSend(server, string.format("round_win,%d", winnerId))
-                end
-            end
-            
-            -- Check if this was the last player in party mode
-            if partyMode then
-                local remainingPlayers = 0
-                for id, player in pairs(players) do
-                    if id ~= localPlayer.id and player.battleX and player.battleY and not player.battleEliminated then
-                        remainingPlayers = remainingPlayers + 1
-                    end
-                end
+            if winnerId and returnState == "hosting" and serverClients and #serverClients > 0 then
+                awardRoundWin(winnerId)
+                checkForScoreDisplay()
                 
-                if remainingPlayers == 0 then
-                    -- Last player died, transition to next game
-                    debugConsole.addMessage("Last player eliminated, transitioning to next game")
-                    _G.partyModeTransition = true
-                    debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                -- Broadcast round win
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, string.format("round_win,%d", winnerId))
                 end
+            elseif winnerId and returnState == "playing" and server and connected then
+                safeSend(server, string.format("round_win,%d", winnerId))
+            end
+            
+            -- Check if we should transition in party mode (only once)
+            if partyMode and not partyModeTransitioned then
+                partyModeTransitioned = true
+                -- In battle royale, transition when the timer runs out
+                debugConsole.addMessage("Battle royale finished, transitioning to next game")
+                _G.partyModeTransition = true
+                debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                
+                -- Host will handle the transition in the main loop
             end
             
             -- Only show score lobby after every 3 games
@@ -877,40 +814,12 @@ function love.update(dt)
                 debugConsole.addMessage("Party mode active, staying in battle royale state for next game")
             end
             battleRoyale.reset()
+            partyModeTransitioned = false -- Reset for next game
         end
     elseif gameState == "hosting" then
         updateServer()
     elseif gameState == "playing" or gameState == "connecting" then
         updateClient()
-    elseif gameState == "racegame" then
-        if returnState == "hosting" then
-            updateServer()
-        else
-            updateClient()
-        end
-
-        raceGame.update(dt)  -- This was likely missing
-
-        if raceGame.game_over then
-            debugConsole.addMessage("Race game over, returning to state: " .. returnState)
-            if returnState == "hosting" then
-                if players[localPlayer.id] then
-                    players[localPlayer.id].totalScore = 
-                        (players[localPlayer.id].totalScore or 0) + raceGame.current_round_score
-                    localPlayer.totalScore = players[localPlayer.id].totalScore
-                end
-                for _, client in ipairs(serverClients) do
-                    safeSend(client, string.format("total_score,%d,%d", 
-                        localPlayer.id, localPlayer.totalScore))
-                end
-            else
-                if server and connected then
-                    safeSend(server, "race_score," .. raceGame.current_round_score)
-                end
-            end
-            gameState = returnState
-            debugConsole.addMessage("Returned to state: " .. gameState)
-        end
     end
     accumulatedTime = accumulatedTime + dt
     while accumulatedTime >= fixedTimestep do
@@ -998,15 +907,12 @@ function updateServer()
             laserData = "|" .. table.concat(laserStrings, "|")
         end
         
-        -- Include elimination status for host
-        local eliminationStatus = battleRoyale.player_dropped and "1" or "0"
-        
-        -- Send position and laser data like laser game
+        -- Send position and laser data like laser game (no elimination status)
         for _, client in ipairs(serverClients) do
-            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s",
+            safeSend(client, string.format("battle_position,0,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
                 battleX, battleY,
                 localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], 
-                eliminationStatus, laserData or ""))
+                laserData or ""))
         end
         
         -- Game state is now deterministic - no need to sync meteoroids/powerups
@@ -1148,14 +1054,11 @@ function updateClient()
                 laserData = "|" .. table.concat(laserStrings, "|")
             end
             
-            -- Include elimination status
-            local eliminationStatus = battleRoyale.player_dropped and "1" or "0"
-            
-            -- Send position and laser data like laser game
-            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s",
+            -- Send position and laser data like laser game (no elimination status)
+            safeSend(server, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
                 localPlayer.id, battleX, battleY,
                 localPlayer.color[1], localPlayer.color[2], localPlayer.color[3], 
-                eliminationStatus, laserData or ""))
+                laserData or ""))
         end
     end
 end
@@ -1169,8 +1072,6 @@ function love.draw()
     elseif gameState == "battleroyale" then
         debugConsole.addMessage("[Draw] Drawing battle royale game")
         battleRoyale.draw(players, localPlayer.id)
-    elseif gameState == "racegame" then
-        raceGame.draw(players, localPlayer.id)
     elseif gameState == "menu" then
         local bgx, bgy = musicHandler.applyToDrawable("menu_bg", 0, 0) --changes for music effect
         local scale = 3
@@ -1234,7 +1135,7 @@ function love.draw()
         
         if gameState ~= "instructions" then
             love.graphics.setColor(1, 1, 0)
-            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Battle Royale, (4) Race Game, (P) Party Mode", 
+            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Battle Royale, (P) Party Mode", 
                 0, love.graphics.getHeight() - 30, love.graphics.getWidth(), "center")
         end
     end
@@ -1386,10 +1287,6 @@ function love.keypressed(key)
         end
     end
 
-    if gameState == "racegame" then
-        raceGame.keypressed(key)
-        return
-    end
 
     -- Handle spacebar specifically for battle royale
     if gameState == "battleroyale" and key == " " then
@@ -1400,7 +1297,7 @@ function love.keypressed(key)
     end
 
     -- Only allow host to start games
-    if key == "1" or key == "2" or key == "3" or key == "4" then
+    if key == "1" or key == "2" or key == "3" then
         if gameState ~= "hosting" then
             debugConsole.addMessage("[Game] Only the host can start games")
             return
@@ -1483,23 +1380,6 @@ function love.keypressed(key)
                     debugConsole.addMessage("[Host] Sent battle royale start to client")
                 end
             end)
-        elseif key == "4" then
-            for _, client in ipairs(serverClients) do
-                safeSend(client, "show_race_instructions")
-            end
-            
-            instructions.show("racegame", function()
-                gameState = "racegame"
-                returnState = "hosting"
-                local seed = os.time() + love.timer.getTime() * 10000
-                raceGame.reset()
-                raceGame.setPlayerColor(localPlayer.color)
-                
-                -- Only send game start after instructions
-                for _, client in ipairs(serverClients) do
-                    safeSend(client, "start_race_game," .. seed)
-                end
-            end)
         end
     end
     if key == "p" then
@@ -1513,6 +1393,14 @@ function love.keypressed(key)
                 -- Start with jump game by simulating '1' key press
                 debugConsole.addMessage("[Party Mode] Starting initial Jump game")
                 currentPartyGame = nil  -- Reset this so we start fresh
+                currentGameIndex = 1    -- Reset game index to start from beginning
+                partyModeTransitioned = false -- Reset transition flag
+                
+                -- Notify clients that party mode has started
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, "start_party_mode")
+                end
+                
                 love.keypressed("1")    -- Start with jump game through instructions
             else
                 -- Return to lobby when party mode is turned off
@@ -1747,38 +1635,33 @@ function handleServerMessage(id, data)
             table.insert(parts, part)
         end
         
-        if #parts >= 8 then
+        if #parts >= 7 then
             local playerId = tonumber(parts[2])
             local x = tonumber(parts[3])
             local y = tonumber(parts[4])
             local r = tonumber(parts[5])
             local g = tonumber(parts[6])
             local b = tonumber(parts[7])
-            local eliminationStatus = parts[8]
-            local safeZoneData = parts[9]
             local laserData = ""
-            if #parts > 9 then
-                laserData = parts[10]
+            if #parts > 7 then
+                laserData = parts[8]
             end
             
         if not players[playerId] then
             players[playerId] = {}
-            players[playerId].battleEliminated = false -- Initialize as not eliminated
         end
         players[playerId].battleX = x
         players[playerId].battleY = y
         players[playerId].color = {r, g, b}
-        players[playerId].battleEliminated = (eliminationStatus == "1")
         players[playerId].battleLasers = laserData
-        players[playerId].battleSafeZone = safeZoneData
             
             -- Debug: Show what we received and are sending
-            debugConsole.addMessage("[Server] Received player " .. playerId .. " elimination: " .. eliminationStatus)
-            debugConsole.addMessage("[Server] Sending player " .. playerId .. " elimination: " .. eliminationStatus)
+            debugConsole.addMessage("[Server] Received player " .. playerId .. " position update")
+            debugConsole.addMessage("[Server] Sending player " .. playerId .. " position update")
             
             for _, client in ipairs(serverClients) do
-                safeSend(client, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s%s",
-                    playerId, x, y, r, g, b, eliminationStatus, safeZoneData, laserData))
+                safeSend(client, string.format("battle_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%s",
+                    playerId, x, y, r, g, b, laserData))
             end
         end
         return
@@ -1923,29 +1806,7 @@ function handleServerMessage(id, data)
             x, y = tonumber(x), tonumber(y)
             spawnTime, spawnSide = tonumber(spawnTime), tonumber(spawnSide)
             
-            -- Remove power-up from host's game state using spawn info for reliable matching
-            if battleRoyale and battleRoyale.powerUps then
-                local found = false
-                for i = #battleRoyale.powerUps, 1, -1 do
-                    local powerUp = battleRoyale.powerUps[i]
-                    if powerUp.type == type and powerUp.spawnTime == spawnTime and powerUp.spawnSide == spawnSide then
-                        table.remove(battleRoyale.powerUps, i)
-                        debugConsole.addMessage("[Server] Removed power-up " .. type .. " (spawnTime=" .. spawnTime .. ") from host game state")
-                        found = true
-                        break
-                    end
-                end
-                if not found then
-                    debugConsole.addMessage("[Server] WARNING: Could not find power-up to remove from host!")
-                end
-            end
-            
-            -- Forward power-up collection to all other clients
-            for _, client in ipairs(serverClients) do
-                if client ~= event.peer then -- Don't send back to sender
-                    safeSend(client, data)
-                end
-            end
+            -- Power-ups removed from game - no forwarding needed
             debugConsole.addMessage("[Server] Forwarded power-up collection from player " .. playerId)
         end
         return
@@ -1992,7 +1853,7 @@ function handleClientMessage(data)
             _G.gameState = "battleroyale"
             _G.players = players
             _G.localPlayer = localPlayer
-            battleRoyale.load()
+            battleRoyale.reset()
             battleRoyale.setSeed(seed)
             battleRoyale.setPlayerColor(localPlayer.color)
             debugConsole.addMessage("[Client] Battle royale game state set to: " .. gameState)
@@ -2016,9 +1877,22 @@ function handleClientMessage(data)
         return
     end
 
-    if data == "party_mode_transition" then
-        debugConsole.addMessage("[Client] Received party mode transition signal")
-        _G.partyModeTransition = true
+    if data:match("^party_transition_to,") then
+        local nextGame = data:match("^party_transition_to,(.+)")
+        debugConsole.addMessage("[Client] Received party mode transition to: " .. nextGame)
+        
+        -- Start the specific game directly
+        if nextGame == "jumpgame" then
+            gameState = "jumpgame"
+            jumpGame.reset(players)
+            jumpGame.setPlayerColor(localPlayer.color)
+        elseif nextGame == "lasergame" then
+            gameState = "lasergame"
+            -- Client will receive seed in start_laser_game message
+        elseif nextGame == "battleroyale" then
+            gameState = "battleroyale"
+            -- Client will receive seed in start_battleroyale_game message
+        end
         return
     end
 
@@ -2027,10 +1901,6 @@ function handleClientMessage(data)
         return
     end
 
-    if data == "show_race_instructions" then
-        instructions.show("racegame", function() end)
-        return
-    end
 
     -- Handle total score updates from server
     if data:match("^total_score,(%d+),(%d+)") then
@@ -2161,13 +2031,6 @@ function handleClientMessage(data)
         return
     end
 
-    if data == "start_race_game" then
-        gameState = "racegame"
-        returnState = "playing"
-        raceGame.reset()
-        raceGame.setPlayerColor(localPlayer.color)
-        return
-    end
 
     if data:match("high_score,(%d+)") then
         highScore = tonumber(data:match("high_score,(%d+)")) -- wtf
@@ -2234,7 +2097,6 @@ function handleClientMessage(data)
             if id and id ~= localPlayer.id then
                 if not players[id] then
                     players[id] = {}
-                    players[id].battleEliminated = false -- Initialize as not eliminated
                 end
                 players[id].battleX = x
                 players[id].battleY = y
@@ -2245,19 +2107,6 @@ function handleClientMessage(data)
         return
     end
 
-    if data:match("^race_position,") then
-        local id, x, y, r, g, b = data:match("race_position,(%d+),([-%d.]+),([-%d.]+),([%d.]+),([%d.]+),([%d.]+)")
-        id = tonumber(id)
-        if id and id ~= localPlayer.id then
-            if not players[id] then
-                players[id] = {}
-            end
-            players[id].raceX = tonumber(x)
-            players[id].raceY = tonumber(y)
-            players[id].color = {tonumber(r), tonumber(g), tonumber(b)}
-        end
-        return
-    end
 
     -- Handle your_id assignment
     if data:match("your_id,(%d+)") then
@@ -2335,6 +2184,7 @@ function handleClientMessage(data)
         _G.partyMode = partyMode -- Update global reference
         gameState = "jumpgame"
         currentPartyGame = "jumpgame"
+        currentGameIndex = 1 -- Reset game index to match host
         returnState = "playing"
         jumpGame.reset(players)
         jumpGame.setPlayerColor(localPlayer.color)
@@ -2385,36 +2235,7 @@ function handleClientMessage(data)
         return
     end
 
-    -- Handle power-up collection from other players
-    if data:match("^battle_powerup_collected,") then
-        local playerId, x, y, type, spawnTime, spawnSide = data:match("^battle_powerup_collected,(%d+),([-%d.]+),([-%d.]+),([^,]+),([-%d.]+),(%d+)")
-        if playerId and x and y and type and spawnTime and spawnSide and playerId ~= localPlayer.id then
-            playerId = tonumber(playerId)
-            x, y = tonumber(x), tonumber(y)
-            spawnTime, spawnSide = tonumber(spawnTime), tonumber(spawnSide)
-            
-            -- Remove the power-up from local game state using spawn info for reliable matching
-            local found = false
-            for i = #battleRoyale.powerUps, 1, -1 do
-                local powerUp = battleRoyale.powerUps[i]
-                if powerUp.type == type and powerUp.spawnTime == spawnTime and powerUp.spawnSide == spawnSide then
-                    table.remove(battleRoyale.powerUps, i)
-                    debugConsole.addMessage("[Client] Removed power-up " .. type .. " (spawnTime=" .. spawnTime .. ") collected by player " .. playerId)
-                    found = true
-                    break
-                end
-            end
-            
-            if not found then
-                debugConsole.addMessage("[Client] WARNING: Could not find power-up to remove! Looking for: type=" .. type .. ", spawnTime=" .. spawnTime .. ", spawnSide=" .. spawnSide)
-                debugConsole.addMessage("[Client] Available power-ups: " .. #battleRoyale.powerUps)
-                for i, powerUp in ipairs(battleRoyale.powerUps) do
-                    debugConsole.addMessage("[Client] Power-up " .. i .. ": type=" .. powerUp.type .. ", spawnTime=" .. (powerUp.spawnTime or "nil") .. ", spawnSide=" .. (powerUp.spawnSide or "nil"))
-                end
-            end
-        end
-        return
-    end
+    -- Power-ups removed from game - no handling needed
 
     -- Handle battle royale game state synchronization
     if data:match("^battle_sync,") then
