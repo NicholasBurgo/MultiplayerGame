@@ -8,6 +8,7 @@ local anim8 = require "scripts.anim8"
 local jumpGame = require "scripts.jumpgame"
 local laserGame = require "scripts.lasergame"
 local battleRoyale = require "scripts.battleroyale"
+local dodgeGame = require "scripts.dodgegame"
 local raceGame = require "scripts.racegame"
 local characterCustomization = require "scripts.charactercustom"
 local scoreLobby = require "scripts.scorelobby"
@@ -47,7 +48,8 @@ local scoreDisplayDuration = 3 -- Show for 3 seconds
 local miniGameLineup = {
     "jumpgame",
     "lasergame", 
-    "battleroyale"
+    "battleroyale",
+    "dodgegame"
 }
 local currentGameIndex = 1
 
@@ -114,6 +116,7 @@ function initializeRoundWins()
         players[id].jumpScore = 0
         players[id].laserHits = 0
         players[id].battleScore = 0
+        players[id].dodgeScore = 0
     end
     if localPlayer.id then
         roundWins[localPlayer.id] = 0
@@ -121,6 +124,7 @@ function initializeRoundWins()
             players[localPlayer.id].jumpScore = 0
             players[localPlayer.id].laserHits = 0
             players[localPlayer.id].battleScore = 0
+            players[localPlayer.id].dodgeScore = 0
         end
     end
 end
@@ -471,6 +475,8 @@ function love.update(dt)
         currentPartyGame = "lasergame"
     elseif gameState == "battleroyale" then
         currentPartyGame = "battleroyale"
+    elseif gameState == "dodgegame" then
+        currentPartyGame = "dodgegame"
     end
 
     -- Check for party mode transition flag (host only)
@@ -532,6 +538,22 @@ function love.update(dt)
             for _, client in ipairs(serverClients) do
                 safeSend(client, "start_battleroyale_game," .. seed)
             end
+        elseif nextGame == "dodgegame" then
+            gameState = "dodgegame"
+            _G.returnState = returnState
+            _G.gameState = "dodgegame"
+            _G.players = players
+            _G.localPlayer = localPlayer
+            initializeRoundWins()
+            local seed = os.time() + love.timer.getTime() * 10000
+            dodgeGame.reset()
+            dodgeGame.setSeed(seed)
+            dodgeGame.setPlayerColor(localPlayer.color)
+            
+            -- Host notifies clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, "start_dodge_game," .. seed)
+            end
         end
         
         -- Send specific game transition to clients
@@ -549,6 +571,8 @@ function love.update(dt)
             currentPartyGame = "lasergame"
         elseif gameState == "battleroyale" then
             currentPartyGame = "battleroyale"
+        elseif gameState == "dodgegame" then
+            currentPartyGame = "dodgegame"
         end
     end
 
@@ -816,6 +840,87 @@ function love.update(dt)
             battleRoyale.reset()
             partyModeTransitioned = false -- Reset for next game
         end
+    elseif gameState == "dodgegame" then
+        if returnState == "hosting" then
+            updateServer()
+        else
+            updateClient()
+        end
+
+        dodgeGame.update(dt)
+
+        if connected then
+            local message = string.format("dodge_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
+                localPlayer.id or 0,
+                dodgeGame.player.x,
+                dodgeGame.player.y,
+                localPlayer.color[1],
+                localPlayer.color[2],
+                localPlayer.color[3]
+            )
+            if returnState == "hosting" then
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, message)
+                end
+            else
+                safeSend(server, message)
+            end
+        end
+
+        if dodgeGame.game_over then
+            debugConsole.addMessage("Dodge game over, returning to state: " .. returnState)
+            
+            -- Award round win to player with highest survival score
+            local winnerId = localPlayer.id
+            local highestScore = dodgeGame.current_round_score
+            
+            -- Check all players for highest score
+            for id, player in pairs(players) do
+                if player.dodgeScore and player.dodgeScore > highestScore then
+                    highestScore = player.dodgeScore
+                    winnerId = id
+                end
+            end
+            
+            if winnerId and returnState == "hosting" and serverClients and #serverClients > 0 then
+                awardRoundWin(winnerId)
+                checkForScoreDisplay()
+                
+                -- Broadcast round win
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, string.format("round_win,%d", winnerId))
+                end
+            elseif winnerId and returnState == "playing" and server and connected then
+                safeSend(server, string.format("round_win,%d", winnerId))
+            end
+            
+            -- Check if we should transition in party mode (only once)
+            if partyMode and not partyModeTransitioned then
+                partyModeTransitioned = true
+                -- In dodge game, transition when the timer runs out
+                debugConsole.addMessage("Dodge game finished, transitioning to next game")
+                _G.partyModeTransition = true
+                debugConsole.addMessage("[PartyMode] Set party mode transition flag")
+                
+                -- Host will handle the transition in the main loop
+            end
+            
+            -- Only show score lobby after every 3 games
+            if currentRound % maxRounds == 0 then
+                debugConsole.addMessage("[Main] Showing score lobby after round " .. currentRound)
+                scoreLobby.show(currentRound, roundWins, players)
+            end
+            
+            -- Only return to lobby if not in party mode
+            if not partyMode then
+                gameState = returnState
+                debugConsole.addMessage("Returned to state: " .. gameState)
+            else
+                debugConsole.addMessage("Party mode active, staying in dodge game state for next game")
+            end
+            dodgeGame.reset()
+            partyModeTransitioned = false -- Reset for next game
+        end
     elseif gameState == "hosting" then
         updateServer()
     elseif gameState == "playing" or gameState == "connecting" then
@@ -916,6 +1021,19 @@ function updateServer()
         end
         
         -- Game state is now deterministic - no need to sync meteoroids/powerups
+    end
+    
+    -- send dodge game positions
+    if gameState == "dodgegame" then
+        local dodgeX = dodgeGame.player.x
+        local dodgeY = dodgeGame.player.y 
+        
+        -- Send position data
+        for _, client in ipairs(serverClients) do
+            safeSend(client, string.format("dodge_position,0,%.2f,%.2f,%.2f,%.2f,%.2f",
+                dodgeX, dodgeY,
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+        end
     end
     
 
@@ -1062,6 +1180,17 @@ function updateClient()
                 laserData or ""))
         end
         
+        -- dodge game positions
+        if gameState == "dodgegame" then
+            local dodgeX = dodgeGame.player.x
+            local dodgeY = dodgeGame.player.y
+            
+            -- Send position data
+            safeSend(server, string.format("dodge_position,%d,%.2f,%.2f,%.2f,%.2f,%.2f",
+                localPlayer.id, dodgeX, dodgeY,
+                localPlayer.color[1], localPlayer.color[2], localPlayer.color[3]))
+        end
+        
     end
 end
 
@@ -1074,6 +1203,9 @@ function love.draw()
     elseif gameState == "battleroyale" then
         debugConsole.addMessage("[Draw] Drawing battle royale game")
         battleRoyale.draw(players, localPlayer.id)
+    elseif gameState == "dodgegame" then
+        debugConsole.addMessage("[Draw] Drawing dodge game")
+        dodgeGame.draw(players, localPlayer.id)
     elseif gameState == "menu" then
         local bgx, bgy = musicHandler.applyToDrawable("menu_bg", 0, 0) --changes for music effect
         local scale = 3
@@ -1137,7 +1269,7 @@ function love.draw()
         
         if gameState ~= "instructions" then
             love.graphics.setColor(1, 1, 0)
-            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Battle Royale, (P) Party Mode", 
+            love.graphics.printf("(1) Jump Game, (2) Laser Game, (3) Battle Royale, (4) Dodge Laser, (P) Party Mode", 
                 0, love.graphics.getHeight() - 30, love.graphics.getWidth(), "center")
         end
     end
@@ -1299,7 +1431,7 @@ function love.keypressed(key)
     end
 
     -- Only allow host to start games
-    if key == "1" or key == "2" or key == "3" then
+    if key == "1" or key == "2" or key == "3" or key == "4" then
         if gameState ~= "hosting" then
             debugConsole.addMessage("[Game] Only the host can start games")
             return
@@ -1380,6 +1512,32 @@ function love.keypressed(key)
                 for _, client in ipairs(serverClients) do
                     safeSend(client, "start_battleroyale_game," .. seed)
                     debugConsole.addMessage("[Host] Sent battle royale start to client")
+                end
+            end)
+        elseif key == "4" then
+            -- Notify clients BEFORE showing host instructions
+            for _, client in ipairs(serverClients) do
+                safeSend(client, "show_dodge_instructions")
+            end
+            
+            instructions.show("dodgegame", function()
+                gameState = "dodgegame"
+                returnState = "hosting"
+                _G.returnState = "hosting"
+                _G.gameState = "dodgegame"
+                _G.players = players
+                _G.localPlayer = localPlayer
+                initializeRoundWins()
+                local seed = os.time() + love.timer.getTime() * 10000
+                dodgeGame.reset()
+                dodgeGame.setSeed(seed)
+                dodgeGame.setPlayerColor(localPlayer.color)
+                
+                -- Only send game start after instructions
+                debugConsole.addMessage("[Host] Sending dodge game start to " .. #serverClients .. " clients")
+                for _, client in ipairs(serverClients) do
+                    safeSend(client, "start_dodge_game," .. seed)
+                    debugConsole.addMessage("[Host] Sent dodge game start to client")
                 end
             end)
         end
@@ -1629,6 +1787,36 @@ function handleServerMessage(id, data)
         return
     end
 
+    -- Handle dodge game positions
+    if data:match("dodge_position,(%d+),") then
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        if #parts >= 7 then
+            local playerId = tonumber(parts[2])
+            local x = tonumber(parts[3])
+            local y = tonumber(parts[4])
+            local r = tonumber(parts[5])
+            local g = tonumber(parts[6])
+            local b = tonumber(parts[7])
+            
+            if not players[playerId] then
+                players[playerId] = {}
+            end
+            players[playerId].dodgeX = x
+            players[playerId].dodgeY = y
+            players[playerId].color = {r, g, b}
+            
+            -- Forward to all other clients
+            for _, client in ipairs(serverClients) do
+                safeSend(client, data)
+            end
+        end
+        return
+    end
+
     -- Handle battle royale positions
     if data:match("battle_position,(%d+),") then
         -- Parse the message step by step to avoid regex issues
@@ -1865,6 +2053,25 @@ function handleClientMessage(data)
         end
         return
     end
+    
+    if data:match("^start_dodge_game,") then
+        local seed = tonumber(data:match("^start_dodge_game,(%d+)"))
+        debugConsole.addMessage("[Client] RECEIVED DODGE GAME START MESSAGE with seed: " .. seed)
+        if seed then
+            gameState = "dodgegame"
+            returnState = "playing"
+            _G.returnState = "playing"
+            _G.gameState = "dodgegame"
+            _G.players = players
+            _G.localPlayer = localPlayer
+            dodgeGame.reset()
+            dodgeGame.setSeed(seed)
+            dodgeGame.setPlayerColor(localPlayer.color)
+            debugConsole.addMessage("[Client] Dodge game state set to: " .. gameState)
+            debugConsole.addMessage("[Client] Dodge game loaded successfully with seed: " .. seed)
+        end
+        return
+    end
     -- instructions
     if data == "show_jump_instructions" then
         instructions.show("jumpgame", function() end)
@@ -1896,12 +2103,20 @@ function handleClientMessage(data)
         elseif nextGame == "battleroyale" then
             gameState = "battleroyale"
             -- Client will receive seed in start_battleroyale_game message
+        elseif nextGame == "dodgegame" then
+            gameState = "dodgegame"
+            -- Client will receive seed in start_dodge_game message
         end
         return
     end
 
     if data == "show_battleroyale_instructions" then
         instructions.show("battleroyale", function() end)
+        return
+    end
+    
+    if data == "show_dodge_instructions" then
+        instructions.show("dodgegame", function() end)
         return
     end
     
@@ -2083,6 +2298,33 @@ function handleClientMessage(data)
     end
     
     
+
+    if data:match("^dodge_position,") then
+        -- Parse the message using comma delimiter like laser game
+        local parts = {}
+        for part in data:gmatch("([^,]+)") do
+            table.insert(parts, part)
+        end
+        
+        if #parts >= 7 then
+            local id = tonumber(parts[2])
+            local x = tonumber(parts[3])
+            local y = tonumber(parts[4])
+            local r = tonumber(parts[5])
+            local g = tonumber(parts[6])
+            local b = tonumber(parts[7])
+            
+            if id and id ~= localPlayer.id then
+                if not players[id] then
+                    players[id] = {}
+                end
+                players[id].dodgeX = x
+                players[id].dodgeY = y
+                players[id].color = {r, g, b}
+            end
+        end
+        return
+    end
 
     if data:match("^battle_position,") then
         -- Parse the message using comma delimiter like laser game
