@@ -68,20 +68,7 @@ function dodgeGame.load()
 
     dodgeGame.keysPressed = {}
     
-    -- Add rhythmic effects for lasers
-    musicHandler.addEffect("laser_warning", "beatPulse", {
-        baseColor = {1, 0, 0},
-        intensity = 0.8,
-        duration = 0.3
-    })
-    
-    musicHandler.addEffect("laser_active", "combo", {
-        scaleAmount = 0,
-        rotateAmount = 0,
-        frequency = 4, -- Fast pulsing
-        phase = 0,
-        snapDuration = 0.1
-    })
+    -- Laser colors now match laser game (static red colors)
 
     -- Reset player
     dodgeGame.player = {
@@ -95,8 +82,8 @@ function dodgeGame.load()
         invincibility_timer = 0
     }
     
-    -- Set star direction for this round
-    dodgeGame.star_direction = math.random(0, 2 * math.pi)
+    -- Set star direction for this round (top to bottom for space movement effect)
+    dodgeGame.star_direction = math.pi / 2  -- 90 degrees (downward)
     
     -- Create game elements
     dodgeGame.createStars()
@@ -354,13 +341,13 @@ end
 
 function dodgeGame.createStars()
     dodgeGame.stars = {}
-    -- Create a moving starfield with uniform direction and color
+    -- Create a moving starfield moving from top to bottom (space movement effect)
     for i = 1, 150 do
         table.insert(dodgeGame.stars, {
             x = math.random(0, dodgeGame.screen_width),
-            y = math.random(0, dodgeGame.screen_height),
+            y = math.random(-dodgeGame.screen_height, dodgeGame.screen_height), -- Start above screen for smooth entry
             size = math.random(1, 3),
-            speed = math.random(20, 60) -- Movement speed in pixels per second
+            speed = math.random(60, 180) -- 3x faster movement speed (60-180 pixels per second)
         })
     end
 end
@@ -380,10 +367,11 @@ function dodgeGame.updateStars(dt)
             star.x = 0
         end
         
-        if star.y < 0 then
-            star.y = dodgeGame.screen_height
-        elseif star.y > dodgeGame.screen_height then
-            star.y = 0
+        -- For top-to-bottom movement, wrap stars from bottom to top
+        if star.y > dodgeGame.screen_height then
+            star.y = -20 -- Start slightly above screen for smooth entry
+        elseif star.y < -20 then
+            star.y = dodgeGame.screen_height + 20 -- Keep moving if above screen
         end
     end
 end
@@ -484,9 +472,8 @@ end
 function dodgeGame.drawLasers()
     for _, laser in ipairs(dodgeGame.lasers) do
         if laser.is_tracking then
-            -- Draw tracking indicator (red pulsing line that follows player)
-            local pulseColor = musicHandler.getCurrentColor("laser_warning")
-            love.graphics.setColor(pulseColor[1], pulseColor[2], pulseColor[3], 0.6)
+            -- Draw tracking indicator (red line that follows player - matches laser game)
+            love.graphics.setColor(1, 0, 0, 0.3)
             love.graphics.setLineWidth(dodgeGame.indicator_width)
             love.graphics.line(laser.x, 0, laser.x, dodgeGame.screen_height)
             love.graphics.setLineWidth(1)
@@ -497,9 +484,8 @@ function dodgeGame.drawLasers()
             love.graphics.setColor(1, 1, 1, 0.8)
             love.graphics.circle('line', laser.x, dodgeGame.screen_height - 20, 8)
         elseif laser.is_active then
-            -- Draw active laser (bright red vertical line - 3x wider than indicator)
-            local activeColor = musicHandler.getCurrentColor("laser_active")
-            love.graphics.setColor(activeColor[1], activeColor[2], activeColor[3], 1.0)
+            -- Draw active laser (red vertical line - matches laser game)
+            love.graphics.setColor(1, 0, 0, 0.8)
             love.graphics.setLineWidth(dodgeGame.laser_width)
             love.graphics.line(laser.x, 0, laser.x, dodgeGame.screen_height)
             love.graphics.setLineWidth(1)
